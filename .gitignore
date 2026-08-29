@@ -5,11 +5,6 @@ __pycache__/
 */test_vit.py
 # C extensions
 *.so
-test_images
-test
-*/models/debug_vit.py
-*/models/test_vit.py
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
