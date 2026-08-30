@@ -7,7 +7,12 @@ services:
         - POSTGRE_PASSWORD:POSTGRE_PASSWORD
         - POSTGRE_USER:POSTGRE_USER
 
+
+
+
+
     mock_api:
+      dockerfile: dockerfile
       build: ./mock_api
       ports: 
         - 8000:8000
@@ -23,7 +28,14 @@ services:
       restart: unless-stopped
 
     redis:
-      build:
+      image: redis:7-alpine
+      restart: unless-stopped
+      command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+      deploy:
+      resources:
+        limits:
+          memory: 512M
+      
 
 
 
