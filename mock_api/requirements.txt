@@ -2,3 +2,4 @@ faker==40.37.0
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 pydantic_settings==2.14.1
+#python-dateutil==2.9.0.post0
