@@ -32,7 +32,7 @@ def create_order() -> Order: # CREATE ONLY 1 ORDER
         supplier_id:int = random.randint(1,10**6)
         planned_quantity:int = random.randint(1,10**3)
         
-        order = Order(order_id=order_id,product_id=product_id,supplier_id=supplier_id,planned_quantity=planned_quantity,order_date=order_date,excepted_delivery_date=excepted_delivery_date)
+        order = Order(order_id=order_id,product_id=product_id,supplier_id=supplier_id,planned_quantity=planned_quantity,order_date=order_date,expected_delivery_date=excepted_delivery_date)
         
         return order
     except Exception as e:
