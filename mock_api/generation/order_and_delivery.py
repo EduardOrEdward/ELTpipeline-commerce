@@ -56,5 +56,8 @@ def create_order_and_delivery()-> Tuple[Order,Delivery]:
         raise e
 
 
-def generator_orders_deliveries(n:int) -> List[Tuple[Order,Delivery]]:
-    return [create_order_and_delivery() for _ in range(0,n)]
+def generator_orders(n:int)->List[Order]:
+    return [create_order_and_delivery()[0] for _ in range(0,n)]
+
+def generator_deliveries(n:int)->List[Delivery]:
+    return [create_order_and_delivery()[1] for _ in range(0,n)]
