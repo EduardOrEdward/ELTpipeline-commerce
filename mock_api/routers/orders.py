@@ -10,7 +10,7 @@ from mock_api.models.orders import Order
 router = APIRouter(tags=["Orders"])
 
 @router.get("/orders")
-def get_orders(limit:int=100)->List[Order]:
+async def get_orders(limit:int=100)->List[Order]:
     start = time.perf_counter()
     logger.info("Starting generating orders")
     l = generator_orders(n=limit)

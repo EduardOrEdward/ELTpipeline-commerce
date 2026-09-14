@@ -30,16 +30,16 @@ def create_order_and_delivery()-> Tuple[Order,Delivery]:
                 expected_delivery_date = expected_delivery_date.replace(day=random.randint(1,28))
         else:
                 expected_delivery_date = expected_delivery_date.replace(day=random.randint(1,30))
-        order_id:str = fake.uuid4()
-        product_id:int = random.randint(1,10**3)
-        supplier_id:int = random.randint(1,10**4)
-        planned_quantity:int = random.randint(1,10**3)
+        order_id:str = fake.pystr(min_chars=5,max_chars=5) #The collision will happen which is great!
+        product_id:int = random.randint(1,5*10**2)
+        supplier_id:int = random.randint(1,8*10**2)
+        planned_quantity:int = random.randint(-10,10**2) #Simulate the bug of negative ordered quantity
         
         order:Order = Order(order_id=order_id,product_id=product_id,supplier_id=supplier_id,planned_quantity=planned_quantity,order_date=order_date,expected_delivery_date=expected_delivery_date)
         # ORDER GENERATION ENDS
         
         # DELIVERY GENERATION STARTS
-        delivery_id:str = fake.uuid4()
+        delivery_id:str = fake.pystr(min_chars=5,max_chars=5)
         actual_quantity:int = random.randint(planned_quantity-1,planned_quantity+1)
         if expected_delivery_date > order_date+timedelta(weeks=2): 
             start:date = expected_delivery_date - random.choice([timedelta(weeks=random.randint(0,2)),timedelta()])

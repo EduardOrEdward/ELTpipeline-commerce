@@ -28,19 +28,19 @@ services:
         retries: 3
       restart: unless-stopped
 
-    MinIO:
-      image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-      environment:
-        MINIO_ROOT_USER: minio_user
-        MINIO_ROOT_PASSWORD: minio_password
-      container_name: minio
+    SeaweedFS:
+      image: chrislusf/seaweedfs-enterprise:4.47
+      container_name: seaweedFS
       restart: unless-stopped
       ports:
-        - 9001:9001
-        - 9000:9000
+      - "9333:9333"
+      - "8888:8888"
+      - "8333:8333"
+      - "23646:23646"
       volumes:
-        - ./minio/data:/data
-      command: server /data --console-address ":9001"
+        seaweedFS_volume:
+          - ./seaweedfs/data:/data
+      command: server -s3 -dir=/data
 
 
 

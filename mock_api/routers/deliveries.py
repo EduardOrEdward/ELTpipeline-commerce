@@ -9,7 +9,7 @@ from fastapi import APIRouter
 router = APIRouter(tags=['Delivery'])
 logger = logging.getLogger(__name__)
 @router.get("/delivery",description="The get method to get our deliveries(with same order_id)")
-def get_delivery(limit:int=100) -> List[Delivery]:
+async def get_delivery(limit:int=100) -> List[Delivery]:
     start = time.perf_counter()
     logger.info("Starting generating deliveries")
     l = generator_deliveries(n=limit)
