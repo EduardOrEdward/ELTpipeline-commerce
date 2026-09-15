@@ -34,11 +34,14 @@ jobs:
         run: python -m compileall -q .
 
   docker-build:
-    name: Build mock API image
+    name: Validate Compose and build mock API
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate Docker Compose
+        run: docker compose config
+
       - name: Build Docker image
-        run: docker build --tag elt-pipeline-commerce-mock-api:ci ./mock_api
+        run: docker build --tag elt-pipeline-commerce-mock-api:ci --file mock_api/dockerfile .
