@@ -35,9 +35,7 @@ services:
     container_name: seaweedfs
     ports:
       - "9333:9333"
-      - "8888:8888"
       - "8333:8333"
-      - "23646:23646"
     volumes:
       - ./seaweedfs/data:/data
     command: server -s3 -dir=/data
