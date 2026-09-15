@@ -17,8 +17,6 @@ services:
     container_name: mock_api
     ports:
       - "8000:8000"
-    env_file:
-      - mock_api/.env
     healthcheck:
       test:
         [
