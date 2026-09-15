@@ -1,47 +1,49 @@
 services:
-    db:
-      
-      image: postgres:15
-      container_name: posgre_database
-      #enviroment:
-        #.env
-      environment:
-        POSTGRES_USER: postgre_user
-        POSTGRES_PASSWORD: postgre_password
+  db:
+    image: postgres:15
+    container_name: postgres_database
+    environment:
+      POSTGRES_USER: postgre_user
+      POSTGRES_PASSWORD: postgre_password
+      POSTGRES_DB: elt_pipeline
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
+  mock_api:
+    build:
+      context: .
+      dockerfile: mock_api/dockerfile
+    container_name: mock_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - mock_api/.env
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
 
-
-    mock_api:
-      build:
-        #container_name: mock_api
-        context: ./mock_api
-        dockerfile: dockerfile
-      container_name: mock_api
-      ports: 
-        - 8000:8000
-      env_file:
-        - mock_api/.env
-      healthcheck:
-        test: ["CMD","curl","-f","http://localhost:8000/health"]
-        interval: 10s
-        timeout: 5s
-        retries: 3
-      restart: unless-stopped
-
-    SeaweedFS:
-      image: chrislusf/seaweedfs-enterprise:4.47
-      container_name: seaweedFS
-      restart: unless-stopped
-      ports:
+  seaweedfs:
+    image: chrislusf/seaweedfs-enterprise:4.47
+    container_name: seaweedfs
+    ports:
       - "9333:9333"
       - "8888:8888"
       - "8333:8333"
       - "23646:23646"
-      volumes:
-        seaweedFS_volume:
-          - ./seaweedfs/data:/data
-      command: server -s3 -dir=/data
+    volumes:
+      - ./seaweedfs/data:/data
+    command: server -s3 -dir=/data
+    restart: unless-stopped
 
-
-
-
+volumes:
+  postgres_data:
