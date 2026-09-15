@@ -1,4 +1,3 @@
-
 #from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,13 +15,12 @@ async def lifespan(app:FastAPI):
     pass
 
 
-
-
-
-
-
-
 app = FastAPI(title="Mock_API",debug=True,summary="Our mock_api with synthetic data",lifespan=lifespan)
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 app.include_router(router=orders.router)
 app.include_router(router=deliveries.router)
 app.include_router(router=inventory.router)
