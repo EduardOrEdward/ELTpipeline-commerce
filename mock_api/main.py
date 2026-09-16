@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    pass
+    yield
 
 
 app = FastAPI(title="Mock_API",debug=True,summary="Our mock_api with synthetic data",lifespan=lifespan)
