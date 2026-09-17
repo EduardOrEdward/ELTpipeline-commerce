@@ -1,10 +1,18 @@
 ## DELIVERIES
-# DATA -> delivery_id, order_id, actual_quanity, actual_delivery_date
+# Pydantic schema for a delivery.
 from datetime import date
+
 from pydantic import BaseModel, Field
-#from mock_api.models.orders import Order
+
+
 class Delivery(BaseModel):
-    delivery_id:str=Field(...,description="The ID of our delivery of the order")
-    order_id:str=Field(...,description="The ID of our order")
-    actual_quantity:int=Field(...,description="The real amount of the thing we ordered")
-    actual_delivery_date:date=Field(...,description="The date we actual get the order")
+    delivery_id: str = Field(
+        ..., min_length=1, description="The ID of the delivery"
+    )
+    order_id: str = Field(..., min_length=1, description="The ID of the related order")
+    actual_quantity: int = Field(
+        ..., ge=0, description="The actual amount received"
+    )
+    actual_delivery_date: date = Field(
+        ..., description="The actual delivery date"
+    )

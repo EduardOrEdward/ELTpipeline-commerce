@@ -1,63 +1,78 @@
-## ORDERS GENERATOR
-# WE NEED TO MAKE -> order_id, product_id, supplier_id, planned_quantity, order_date, expected_delivery_date
+## ORDERS AND DELIVERIES GENERATOR
+# Orders and deliveries are generated as pairs so that order_id is consistent.
 
-## DELIVERIES
-# DATA -> delivery_id, order_id, actual_quanity, actual_delivery_date
-
-
-import faker, random
-from datetime import date,timedelta
 import logging
-from typing import List,Tuple
+import random
+from datetime import date, timedelta
+from typing import List, Tuple
+from uuid import uuid4
+
+from faker import Faker
+
 from mock_api.models.deliveries import Delivery
 from mock_api.models.orders import Order
+
 logger = logging.getLogger(__name__)
-def create_order_and_delivery()-> Tuple[Order,Delivery]:
-    logger.info("Initializa generation of order and delivery")
-    try:
-        fake = faker.Faker()
-        # ORDER GENERATION START
-        order_date:date = fake.date_between(start_date="2000-01-01",end_date="2026-01-01")
-        expected_delivery_date:date = order_date
-        ran:int = random.choice([0,1,2])
-        if ran == 1 and expected_delivery_date.month == 12:
-                expected_delivery_date = expected_delivery_date.replace(year=expected_delivery_date.year+1)
-                expected_delivery_date = expected_delivery_date.replace(month=1)
-        if ran == 2 and expected_delivery_date.month >= 11:
-                expected_delivery_date = expected_delivery_date.replace(year=expected_delivery_date.year+1)
-                expected_delivery_date = expected_delivery_date.replace(month=(expected_delivery_date.month+2)%12)
-        if expected_delivery_date.month == 2:
-                expected_delivery_date = expected_delivery_date.replace(day=random.randint(1,28))
-        else:
-                expected_delivery_date = expected_delivery_date.replace(day=random.randint(1,30))
-        order_id:str = fake.pystr(min_chars=5,max_chars=5) #The collision will happen which is great!
-        product_id:int = random.randint(1,5*10**2)
-        supplier_id:int = random.randint(1,8*10**2)
-        planned_quantity:int = random.randint(-10,10**2) #Simulate the bug of negative ordered quantity
-        
-        order:Order = Order(order_id=order_id,product_id=product_id,supplier_id=supplier_id,planned_quantity=planned_quantity,order_date=order_date,expected_delivery_date=expected_delivery_date)
-        # ORDER GENERATION ENDS
-        
-        # DELIVERY GENERATION STARTS
-        delivery_id:str = fake.pystr(min_chars=5,max_chars=5)
-        actual_quantity:int = random.randint(planned_quantity-1,planned_quantity+1)
-        if expected_delivery_date > order_date+timedelta(weeks=2): 
-            start:date = expected_delivery_date - random.choice([timedelta(weeks=random.randint(0,2)),timedelta()])
-        else:
-            start:date = expected_delivery_date - random.choice([timedelta(weeks=random.randint(0,1)),timedelta()])
-        end:date = expected_delivery_date + random.choice([timedelta(weeks=random.randint(0,2)),timedelta()])
-        actual_delivery_date:date=fake.date_between_dates(start,end)
-        delivery = Delivery(delivery_id=delivery_id,order_id=order_id,actual_quantity=actual_quantity,actual_delivery_date=actual_delivery_date)
-        
-        
-        return order, delivery
-    except Exception as e:
-        logger.error(f"An error accured: {e}")
-        raise e
+fake = Faker()
+
+_orders: List[Order] = []
+_deliveries: List[Delivery] = []
 
 
-def generator_orders(n:int)->List[Order]:
-    return [create_order_and_delivery()[0] for _ in range(0,n)]
+def _new_id() -> str:
+    return uuid4().hex[:8]
 
-def generator_deliveries(n:int)->List[Delivery]:
-    return [create_order_and_delivery()[1] for _ in range(0,n)]
+
+def create_order_and_delivery() -> Tuple[Order, Delivery]:
+    """Create one logically consistent order/delivery pair."""
+    logger.info("Initializing generation of order and delivery")
+
+    order_date: date = fake.date_between(
+        start_date="2000-01-01",
+        end_date="2025-12-31",
+    )
+    expected_delivery_date = order_date + timedelta(days=random.randint(1, 30))
+
+    order = Order(
+        order_id=_new_id(),
+        product_id=random.randint(1, 500),
+        supplier_id=random.randint(1, 800),
+        planned_quantity=random.randint(1, 100),
+        order_date=order_date,
+        expected_delivery_date=expected_delivery_date,
+    )
+
+    actual_quantity = max(0, order.planned_quantity + random.choice([-1, 0, 1]))
+    actual_delivery_date = expected_delivery_date + timedelta(
+        days=random.randint(-7, 14)
+    )
+
+    delivery = Delivery(
+        delivery_id=_new_id(),
+        order_id=order.order_id,
+        actual_quantity=actual_quantity,
+        actual_delivery_date=actual_delivery_date,
+    )
+
+    return order, delivery
+
+
+def _ensure_dataset(n: int) -> None:
+    """Generate records until the shared in-memory dataset has n pairs."""
+    if n < 1:
+        raise ValueError("n must be greater than 0")
+
+    while len(_orders) < n:
+        order, delivery = create_order_and_delivery()
+        _orders.append(order)
+        _deliveries.append(delivery)
+
+
+def generator_orders(n: int) -> List[Order]:
+    _ensure_dataset(n)
+    return _orders[:n]
+
+
+def generator_deliveries(n: int) -> List[Delivery]:
+    _ensure_dataset(n)
+    return _deliveries[:n]
