@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+import os
 import random
 
 from fastapi import FastAPI, Request
@@ -12,7 +13,9 @@ logger = logging.getLogger(__name__)
 # Small amount of controlled instability to make the mock API behave more like
 # a real external service. /health is intentionally excluded so Docker can
 # still distinguish an unhealthy container from a temporarily failing request.
-FAILURE_RATE = 0.05
+FAILURE_RATE = float(os.getenv("FAILURE_RATE", "0.05"))
+if not 0 <= FAILURE_RATE <= 1:
+    raise ValueError("FAILURE_RATE must be between 0 and 1")
 
 
 @asynccontextmanager
