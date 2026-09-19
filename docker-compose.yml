@@ -24,7 +24,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      FAILURE_RATE: "0.05"
+      FAILURE_RATE: ${FAILURE_RATE:-0.05}
     healthcheck:
       test:
         [
