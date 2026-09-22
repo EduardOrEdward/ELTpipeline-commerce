@@ -23,6 +23,3 @@ POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB = os.getenv("POSTGRES_DB", "elt_pipeline")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgre_user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-
-if not POSTGRES_PASSWORD:
-    raise RuntimeError("POSTGRES_PASSWORD environment variable is required")
