@@ -7,7 +7,6 @@ SeaweedFS endpoint. It deliberately does not transform or validate records.
 from datetime import datetime, timezone
 import json
 from typing import Any
-from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from ingestion.config import S3_BUCKET, S3_ENDPOINT
