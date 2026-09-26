@@ -50,5 +50,26 @@ services:
     command: server -s3 -dir=/data
     restart: unless-stopped
 
+  ingestion:
+    build:
+      context: .
+      dockerfile: ingestion/dockerfile
+    environment:
+      API_URL: http://mock_api:8000
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_BUCKET: elt-raw
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: elt_pipeline
+      POSTGRES_USER: postgre_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
+    depends_on:
+      db:
+        condition: service_healthy
+      mock_api:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_started
+
 volumes:
   postgres_data:
