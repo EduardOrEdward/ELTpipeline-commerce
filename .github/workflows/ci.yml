@@ -72,7 +72,7 @@ jobs:
       - name: Wait for SeaweedFS
         run: |
           for i in {1..30}; do
-            if docker compose run --rm ingestion python -c "import urllib.request; urllib.request.urlopen('http://seaweedfs:8333', timeout=2)" >/dev/null 2>&1; then
+            if docker compose run --rm ingestion python -c "import socket; socket.create_connection(('seaweedfs', 8333), timeout=2).close()" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
