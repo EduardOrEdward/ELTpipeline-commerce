@@ -13,9 +13,6 @@ jobs:
   validate-python:
     name: Validate Python
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: mock_api
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,16 +22,26 @@ jobs:
         with:
           python-version: '3.10'
           cache: pip
-          cache-dependency-path: mock_api/requirements.txt
+          cache-dependency-path: |
+            mock_api/requirements.txt
+            ingestion/requirements.txt
 
-      - name: Install dependencies
+      - name: Install mock API dependencies
+        working-directory: mock_api
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
-      - name: Compile Python sources
+      - name: Install ingestion dependencies
+        run: python -m pip install -r ingestion/requirements.txt
+
+      - name: Compile mock API sources
+        working-directory: mock_api
         run: python -m compileall -q .
 
+      - name: Compile ingestion sources
+        run: python -m compileall -q ingestion
+
   docker-build:
-    name: Validate Compose and build mock API
+    name: Validate Compose and build images
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -43,5 +50,8 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose config
 
-      - name: Build Docker image
+      - name: Build mock API image
         run: docker build --tag elt-pipeline-commerce-mock-api:ci --file mock_api/dockerfile .
+
+      - name: Build ingestion image
+        run: docker build --tag elt-pipeline-commerce-ingestion:ci --file ingestion/dockerfile .
