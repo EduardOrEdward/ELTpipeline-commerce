@@ -1,0 +1,11 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY ingestion/requirements.txt ./ingestion/requirements.txt
+
+RUN pip install --no-cache-dir --default-timeout=1000 -r ./ingestion/requirements.txt
+
+COPY ingestion ./ingestion
+
+CMD ["python", "-m", "ingestion.main"]
