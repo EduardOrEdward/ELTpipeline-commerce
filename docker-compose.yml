@@ -47,7 +47,8 @@ services:
       - "8333:8333"
     volumes:
       - ./seaweedfs/data:/data
-    command: server -s3 -dir=/data
+      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    command: server -s3 -dir=/data -s3.config=/etc/seaweedfs/s3.json
     restart: unless-stopped
 
   ingestion:
