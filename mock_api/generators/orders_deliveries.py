@@ -28,8 +28,8 @@ def create_order_and_delivery() -> Tuple[Order, Delivery]:
     logger.info("Initializing generation of order and delivery")
 
     order_date: date = fake.date_between(
-        start_date="2000-01-01",
-        end_date="2025-12-31",
+        start_date=date(2000, 1, 1),
+        end_date=date(2025, 12, 31),
     )
     expected_delivery_date = order_date + timedelta(days=random.randint(1, 30))
 
