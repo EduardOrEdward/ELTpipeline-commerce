@@ -4,7 +4,7 @@ from typing import List
 
 from fastapi import APIRouter, Query
 
-from mock_api.generators.order_deliveries import generator_orders
+from mock_api.generators.orders_deliveries import generator_orders
 from mock_api.models.orders import Order
 
 import logging
