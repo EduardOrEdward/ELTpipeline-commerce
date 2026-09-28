@@ -61,7 +61,7 @@ class ObjectStorageReader:
 
 
 def _dataset_from_key(object_key: str) -> str:
-    """Extract the dataset name from an object key such as orders/2026-09-23/file.json."""
+    """Extract the dataset name from an object key."""
     dataset = object_key.split("/", 1)[0]
     if dataset not in DATASET_TABLES:
         raise ValueError(f"Unsupported Bronze dataset in object key: {object_key}")
