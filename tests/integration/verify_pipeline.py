@@ -6,7 +6,9 @@ from collections import Counter
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import boto3
 import psycopg
+from botocore.client import Config
 
 
 API_BASE_URL = "http://mock_api:8000"
@@ -55,6 +57,28 @@ def verify_api_contract() -> None:
             raise AssertionError(f"Mock API returned no data for {endpoint}")
 
 
+def create_s3_client():
+    access_key = os.environ.get("S3_ACCESS_KEY")
+    secret_key = os.environ.get("S3_SECRET_KEY")
+
+    if not access_key or not secret_key:
+        raise AssertionError("S3 credentials are not configured for integration verification")
+
+    return boto3.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="us-east-1",
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def get_s3_json(client, object_key: str):
+    response = client.get_object(Bucket=S3_BUCKET, Key=object_key)
+    return json.loads(response["Body"].read().decode("utf-8"))
+
+
 def canonical_records(records):
     return Counter(
         json.dumps(record, sort_keys=True, separators=(",", ":"))
@@ -83,11 +107,7 @@ def verify_bronze() -> None:
                 raise AssertionError(f"No source object keys found in {table}")
 
             for object_key in object_keys:
-                object_url = (
-                    f"{S3_BASE_URL}/{S3_BUCKET}/"
-                    f"{object_key.lstrip('/')}"
-                )
-                payload = get_json(object_url)
+                payload = get_s3_json(s3_client, object_key)
 
                 if not isinstance(payload, list) or not payload:
                     raise AssertionError(
