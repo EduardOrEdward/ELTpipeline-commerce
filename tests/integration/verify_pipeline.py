@@ -1,6 +1,7 @@
 """Verify the end-to-end ingestion boundaries in CI."""
 
 import json
+import os
 import time
 from collections import Counter
 from urllib.error import HTTPError, URLError
@@ -87,6 +88,8 @@ def canonical_records(records):
 
 
 def verify_bronze() -> None:
+    s3_client = create_s3_client()
+
     with psycopg.connect(**DB_CONFIG) as connection:
         for dataset, table in DATASETS.items():
             with connection.cursor() as cursor:
