@@ -7,26 +7,41 @@ SeaweedFS endpoint. It deliberately does not transform or validate records.
 from datetime import datetime, timezone
 import json
 from typing import Any
-from urllib.request import Request, urlopen
 
-from ingestion.config import S3_BUCKET, S3_ENDPOINT
+import boto3
+from botocore.client import Config
+
+from ingestion.config import (
+    S3_ACCESS_KEY,
+    S3_BUCKET,
+    S3_ENDPOINT,
+    S3_SECRET_KEY,
+)
 
 
 class ObjectStorage:
-    """Minimal S3-compatible object writer for SeaweedFS."""
+    """S3-compatible object writer for SeaweedFS."""
 
     def __init__(
         self,
         endpoint: str = S3_ENDPOINT,
         bucket: str = S3_BUCKET,
+        access_key: str | None = S3_ACCESS_KEY,
+        secret_key: str | None = S3_SECRET_KEY,
         timeout: int = 10,
     ) -> None:
-        self.endpoint = endpoint.rstrip("/")
-        self.bucket = bucket
-        self.timeout = timeout
+        if not access_key or not secret_key:
+            raise ValueError("S3_ACCESS_KEY and S3_SECRET_KEY must be configured")
 
-    def _url(self, object_key: str) -> str:
-        return f"{self.endpoint}/{self.bucket}/{object_key.lstrip('/')}"
+        self.bucket = bucket
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=endpoint.rstrip("/"),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="us-east-1",
+            config=Config(signature_version="s3v4"),
+        )
 
     def put_json(self, object_key: str, data: Any) -> None:
         """Serialize data as JSON and store it under the given object key."""
@@ -36,17 +51,12 @@ class ObjectStorage:
             separators=(",", ":"),
         ).encode("utf-8")
 
-        request = Request(
-            self._url(object_key),
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-            },
-            method="PUT",
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=object_key.lstrip("/"),
+            Body=payload,
+            ContentType="application/json",
         )
-
-        with urlopen(request, timeout=self.timeout):
-            return
 
     def write_dataset(
         self,
