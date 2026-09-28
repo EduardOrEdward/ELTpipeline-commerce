@@ -2,9 +2,16 @@
 
 import json
 from typing import Any, Protocol
-from urllib.request import Request, urlopen
 
-from ingestion.config import S3_BUCKET, S3_ENDPOINT
+import boto3
+from botocore.client import Config
+
+from ingestion.config import (
+    S3_ACCESS_KEY,
+    S3_BUCKET,
+    S3_ENDPOINT,
+    S3_SECRET_KEY,
+)
 
 
 class DatabaseConnection(Protocol):
@@ -23,20 +30,34 @@ DATASET_TABLES = {
 class ObjectStorageReader:
     """Read raw JSON objects from the S3-compatible SeaweedFS endpoint."""
 
-    def __init__(self, endpoint: str = S3_ENDPOINT, bucket: str = S3_BUCKET, timeout: int = 10) -> None:
-        self.endpoint = endpoint.rstrip("/")
+    def __init__(
+        self,
+        endpoint: str = S3_ENDPOINT,
+        bucket: str = S3_BUCKET,
+        access_key: str | None = S3_ACCESS_KEY,
+        secret_key: str | None = S3_SECRET_KEY,
+        timeout: int = 10,
+    ) -> None:
+        if not access_key or not secret_key:
+            raise ValueError("S3_ACCESS_KEY and S3_SECRET_KEY must be configured")
+
         self.bucket = bucket
-        self.timeout = timeout
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=endpoint.rstrip("/"),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="us-east-1",
+            config=Config(signature_version="s3v4", read_timeout=timeout),
+        )
 
     def get_json(self, object_key: str) -> Any:
         """Download and decode one raw JSON object."""
-        request = Request(
-            f"{self.endpoint}/{self.bucket}/{object_key.lstrip('/')}",
-            headers={"Accept": "application/json"},
-            method="GET",
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=object_key.lstrip("/"),
         )
-        with urlopen(request, timeout=self.timeout) as response:
-            return json.load(response)
+        return json.loads(response["Body"].read().decode("utf-8"))
 
 
 def _dataset_from_key(object_key: str) -> str:
