@@ -28,7 +28,6 @@ class ObjectStorage:
         bucket: str = S3_BUCKET,
         access_key: str | None = S3_ACCESS_KEY,
         secret_key: str | None = S3_SECRET_KEY,
-        timeout: int = 10,
     ) -> None:
         if not access_key or not secret_key:
             raise ValueError("S3_ACCESS_KEY and S3_SECRET_KEY must be configured")
