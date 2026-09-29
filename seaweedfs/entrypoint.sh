@@ -8,8 +8,8 @@ cat > /tmp/s3.json <<EOF
       "name": "ingestion",
       "credentials": [
         {
-          "accessKey": "$"+"{S3_ACCESS_KEY}",
-          "secretKey": "$"+"{S3_SECRET_KEY}"
+          "accessKey": "${S3_ACCESS_KEY}",
+          "secretKey": "${S3_SECRET_KEY}"
         }
       ],
       "actions": [
