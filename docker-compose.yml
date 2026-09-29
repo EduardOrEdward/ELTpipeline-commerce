@@ -47,9 +47,8 @@ services:
       - "8333:8333"
     volumes:
       - ./seaweedfs/data:/data
-    command: >-
-      sh -c 'printf "%s" "${S3_CONFIG}" > /tmp/s3.json &&
-      exec weed server -s3 -dir=/data -s3.config=/tmp/s3.json'
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: ["server", "-s3", "-dir=/data", "-s3.config=/tmp/s3.json"]
     environment:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
