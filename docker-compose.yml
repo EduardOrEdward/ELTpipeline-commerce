@@ -56,7 +56,7 @@ services:
       S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?S3_ADMIN_ACCESS_KEY must be set}
       S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?S3_ADMIN_SECRET_KEY must be set}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8333/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8333/status"]
       interval: 5s
       timeout: 5s
       retries: 12
