@@ -5,6 +5,22 @@ cat > /tmp/s3.json <<EOF
 {
   "identities": [
     {
+      "name": "admin-bootstrap",
+      "credentials": [
+        {
+          "accessKey": "${S3_ADMIN_ACCESS_KEY}",
+          "secretKey": "${S3_ADMIN_SECRET_KEY}"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "List",
+        "Write",
+        "Tagging"
+      ]
+    },
+    {
       "name": "ingestion",
       "credentials": [
         {
