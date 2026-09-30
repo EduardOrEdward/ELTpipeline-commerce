@@ -47,6 +47,7 @@ services:
       - "8333:8333"
     volumes:
       - ./seaweedfs/data:/data
+      - ./seaweedfs/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     command: ["server", "-s3", "-dir=/data", "-s3.config=/tmp/s3.json"]
     environment:
