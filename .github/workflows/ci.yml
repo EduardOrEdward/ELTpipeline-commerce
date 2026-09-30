@@ -53,6 +53,8 @@ jobs:
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
         run: docker compose config
 
       - name: Build mock API image
@@ -74,12 +76,16 @@ jobs:
           FAILURE_RATE: "0"
           S3_ACCESS_KEY: ci-ingestion
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
         run: docker compose up -d db mock_api seaweedfs
 
       - name: Wait for SeaweedFS
         env:
           S3_ACCESS_KEY: ci-ingestion
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
         run: |
           for i in {1..30}; do
             if docker compose run --rm ingestion python -c "import socket; socket.create_connection(('seaweedfs', 8333), timeout=2).close()" >/dev/null 2>&1; then
@@ -104,12 +110,16 @@ jobs:
           FAILURE_RATE: "0"
           S3_ACCESS_KEY: ci-ingestion
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
         run: docker compose run --rm ingestion
 
       - name: Verify ingestion boundaries
         env:
           S3_ACCESS_KEY: ci-ingestion
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
         run: docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
 
       - name: Show service logs on failure
