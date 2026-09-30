@@ -55,6 +55,12 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
       S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?S3_ADMIN_ACCESS_KEY must be set}
       S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?S3_ADMIN_SECRET_KEY must be set}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8333/"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   ingestion:
@@ -78,7 +84,7 @@ services:
       mock_api:
         condition: service_healthy
       seaweedfs:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   postgres_data:
