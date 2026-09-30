@@ -50,9 +50,9 @@ jobs:
       - name: Validate Docker Compose
         env:
           S3_ACCESS_KEY: ci-ingestion
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose config
 
       - name: Build mock API image
@@ -65,6 +65,7 @@ jobs:
     name: Integration test
     runs-on: ubuntu-latest
     needs: docker-build
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,26 +74,17 @@ jobs:
         env:
           FAILURE_RATE: "0"
           S3_ACCESS_KEY: ci-ingestion
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
-        run: docker compose up -d db mock_api seaweedfs
-
-      - name: Wait for dependencies to become healthy
-        env:
-          FAILURE_RATE: "0"
-          S3_ACCESS_KEY: ci-ingestion
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
-        run: docker compose up -d --wait db mock_api seaweedfs
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
+        run: docker compose up -d --wait --wait-timeout 300 db mock_api seaweedfs
 
       - name: Bootstrap S3 bucket
         env:
           S3_ACCESS_KEY: ci-admin
           S3_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
           S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: |
           docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/bootstrap_s3.py
 
@@ -100,28 +92,37 @@ jobs:
         env:
           FAILURE_RATE: "0"
           S3_ACCESS_KEY: ci-ingestion
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose run --rm ingestion
 
       - name: Verify ingestion boundaries
         env:
           S3_ACCESS_KEY: ci-ingestion
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
 
       - name: Show service logs on failure
         if: failure()
-        run: docker compose logs
+        env:
+          FAILURE_RATE: "0"
+          S3_ACCESS_KEY: ci-ingestion
+          S3_SECRET_KEY: ci-secret
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
+        run: |
+          docker compose ps
+          docker inspect seaweedfs --format '{{json .State.Health}}' || true
+          docker compose logs
 
       - name: Stop integration environment
         if: always()
         env:
           S3_ACCESS_KEY: ci-ingestion
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
-          S3_ADMIN_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose down -v
