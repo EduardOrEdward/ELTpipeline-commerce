@@ -82,7 +82,7 @@ jobs:
       - name: Bootstrap S3 bucket
         env:
           S3_ACCESS_KEY: ci-admin
-          S3_SECRET_KEY: ${{ secrets.S3_ADMIN_SECRET_KEY }}
+          S3_SECRET_KEY: ci-admin-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: |
