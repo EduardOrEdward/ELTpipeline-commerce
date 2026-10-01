@@ -56,11 +56,11 @@ services:
       S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?S3_ADMIN_ACCESS_KEY must be set}
       S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?S3_ADMIN_SECRET_KEY must be set}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8333/readyz"]
-      interval: 5s
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 10s
+      retries: 20
+      start_period: 60s
     restart: unless-stopped
 
   ingestion:
