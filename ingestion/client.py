@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 10
 DEFAULT_RETRIES = 3
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+USER_AGENT = "elt-pipeline-commerce-ingestion/1.0"
 
 
 class APIClient:
@@ -44,7 +45,10 @@ class APIClient:
         for attempt in range(self.retries + 1):
             request = Request(
                 url,
-                headers={"Accept": "application/json"},
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": USER_AGENT,
+                },
                 method="GET",
             )
 
