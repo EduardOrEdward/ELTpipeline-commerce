@@ -13,7 +13,7 @@ from botocore.client import Config
 
 
 API_BASE_URL = "http://mock_api:8000"
-S3_BASE_URL = "http://seaweedfs:8333"
+S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://seaweedfs:8333")
 S3_BUCKET = "elt-raw"
 
 DB_CONFIG = {
