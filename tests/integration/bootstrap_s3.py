@@ -12,8 +12,8 @@ BUCKET = os.getenv("S3_BUCKET", "elt-raw")
 
 
 def main() -> None:
-    access_key = os.environ["S3_ACCESS_KEY"]
-    secret_key = os.environ["S3_SECRET_KEY"]
+    access_key = os.environ["S3_ADMIN_ACCESS_KEY"]
+    secret_key = os.environ["S3_ADMIN_SECRET_KEY"]
 
     client = boto3.client(
         "s3",
