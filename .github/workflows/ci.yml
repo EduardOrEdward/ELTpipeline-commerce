@@ -86,7 +86,11 @@ jobs:
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: |
-          docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/bootstrap_s3.py
+          docker compose run --rm \
+            -e S3_ADMIN_ACCESS_KEY=ci-admin \
+            -e S3_ADMIN_SECRET_KEY=ci-admin-secret \
+            -v "${{ github.workspace }}/tests:/tests:ro" \
+            ingestion python /tests/integration/bootstrap_s3.py
 
       - name: Run ingestion
         env:
