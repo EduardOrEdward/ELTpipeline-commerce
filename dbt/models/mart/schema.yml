@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: supplier_reliability
+    description: Supplier-level fulfillment and delivery performance.
+    columns:
+      - name: supplier_id
+        tests:
+          - not_null
+          - unique
+      - name: fulfillment_rate
+        tests:
+          - not_null
+
+  - name: inventory
+    description: Latest known inventory snapshot for each product.
+    columns:
+      - name: product_id
+        tests:
+          - not_null
+          - unique
+      - name: quantity
+        tests:
+          - not_null
+      - name: is_out_of_stock
+        tests:
+          - not_null

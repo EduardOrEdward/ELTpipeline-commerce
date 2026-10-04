@@ -1,0 +1,17 @@
+name: elt_pipeline
+version: "1.0.0"
+config-version: 2
+
+profile: elt_pipeline
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+models:
+  elt_pipeline:
+    staging:
+      +materialized: view
+      +schema: silver
+    mart:
+      +materialized: table
+      +schema: mart

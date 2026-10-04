@@ -1,0 +1,22 @@
+version: 2
+
+sources:
+  - name: bronze
+    schema: bronze
+    description: Raw JSON payloads loaded by the ingestion layer.
+    tables:
+      - name: orders
+        columns:
+          - name: raw_payload
+            tests:
+              - not_null
+      - name: deliveries
+        columns:
+          - name: raw_payload
+            tests:
+              - not_null
+      - name: inventory
+        columns:
+          - name: raw_payload
+            tests:
+              - not_null

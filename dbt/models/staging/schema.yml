@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: stg_orders
+    description: Typed and deduplicated order records extracted from Bronze.
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: product_id
+        tests:
+          - not_null
+      - name: supplier_id
+        tests:
+          - not_null
+
+  - name: stg_deliveries
+    description: Typed and deduplicated delivery records extracted from Bronze.
+    columns:
+      - name: delivery_id
+        tests:
+          - not_null
+          - unique
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+
+  - name: stg_inventory
+    description: Typed inventory snapshots extracted from Bronze.
+    columns:
+      - name: product_id
+        tests:
+          - not_null
+      - name: snapshot_date
+        tests:
+          - not_null
