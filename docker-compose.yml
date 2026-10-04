@@ -86,5 +86,21 @@ services:
       seaweedfs:
         condition: service_healthy
 
+  dbt:
+    build:
+      context: .
+      dockerfile: dbt/dockerfile
+    working_dir: /app
+    environment:
+      DBT_PROFILES_DIR: /app
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: elt_pipeline
+      POSTGRES_USER: postgre_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   postgres_data:
