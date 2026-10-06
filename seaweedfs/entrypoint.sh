@@ -37,4 +37,4 @@ cat > /tmp/s3.json <<EOF
 }
 EOF
 
-exec /usr/bin/weed server -s3 -dir=/data -s3.config=/tmp/s3.json
+exec /usr/bin/weed server -s3 -s3.iam=false -dir=/data -s3.config=/tmp/s3.json
