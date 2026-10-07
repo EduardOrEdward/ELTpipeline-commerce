@@ -111,6 +111,10 @@ jobs:
       - name: Run dbt models and tests
         env:
           POSTGRES_PASSWORD: postgre_password
+          S3_ACCESS_KEY: ci-ingestion
+          S3_SECRET_KEY: ci-secret
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose run --rm dbt build
 
       - name: Show service logs on failure
