@@ -1,6 +1,10 @@
 -- Initialize database infrastructure for the ELT pipeline.
 -- PostgreSQL executes this file only when the database volume is initialized.
 
+CREATE DATABASE metabase;
+
+\connect elt_pipeline
+
 CREATE SCHEMA IF NOT EXISTS bronze;
 CREATE SCHEMA IF NOT EXISTS silver;
 CREATE SCHEMA IF NOT EXISTS mart;
