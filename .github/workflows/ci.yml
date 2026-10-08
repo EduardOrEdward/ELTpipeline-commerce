@@ -82,6 +82,12 @@ jobs:
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose up -d --wait --wait-timeout 300 db mock_api seaweedfs
 
+      - name: Start Metabase
+        run: docker compose up -d --wait --wait-timeout 180 metabase
+
+      - name: Test Metabase health
+        run: curl --fail --silent http://localhost:3000/api/health
+
       - name: Bootstrap S3 bucket
         env:
           S3_ACCESS_KEY: ci-ingestion
