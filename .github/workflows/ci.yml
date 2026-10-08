@@ -156,8 +156,6 @@ jobs:
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose run --rm dbt build
 
-        run: docker compose run --rm dbt build
-
       - name: Verify Metabase can query Mart
         env:
           METABASE_ADMIN_EMAIL: ci-admin@example.com
