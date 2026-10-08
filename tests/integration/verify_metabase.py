@@ -1,7 +1,7 @@
 import os
 import urllib.request
 
-import psycopg2
+import psycopg
 
 
 METABASE_HEALTH_URL = "http://metabase:3000/api/health"
@@ -12,7 +12,7 @@ def main() -> None:
         if response.status != 200:
             raise RuntimeError(f"Metabase health check failed: HTTP {response.status}")
 
-    connection = psycopg2.connect(
+    connection = psycopg.connect(
         host=os.environ["POSTGRES_HOST"],
         port=int(os.environ["POSTGRES_PORT"]),
         dbname=os.environ["POSTGRES_DB"],
