@@ -56,13 +56,13 @@ jobs:
         run: docker compose config
 
       - name: Build mock API image
-        run: docker build --tag elt-pipeline-commerce-mock-api:ci --file mock_api/dockerfile .
+        run: bash .github/scripts/retry-transient-command.sh docker build --tag elt-pipeline-commerce-mock-api:ci --file mock_api/dockerfile .
 
       - name: Build ingestion image
-        run: docker build --tag elt-pipeline-commerce-ingestion:ci --file ingestion/dockerfile .
+        run: bash .github/scripts/retry-transient-command.sh docker build --tag elt-pipeline-commerce-ingestion:ci --file ingestion/dockerfile .
 
       - name: Build dbt image
-        run: docker build --tag elt-pipeline-commerce-dbt:ci --file dbt/dockerfile .
+        run: bash .github/scripts/retry-transient-command.sh docker build --tag elt-pipeline-commerce-dbt:ci --file dbt/dockerfile .
 
   integration:
     name: Integration test
@@ -72,6 +72,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Build Compose images
+        env:
+          S3_ACCESS_KEY: ci-ingestion
+          S3_SECRET_KEY: ci-secret
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
+        run: bash .github/scripts/retry-transient-command.sh docker compose build mock_api ingestion dbt
 
       - name: Start integration dependencies
         env:
