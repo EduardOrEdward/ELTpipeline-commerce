@@ -108,7 +108,7 @@ jobs:
       - name: Configure Metabase data source
         env:
           METABASE_ADMIN_EMAIL: ci-admin@example.com
-          METABASE_ADMIN_PASSWORD: ci-admin-password
+          METABASE_ADMIN_PASSWORD: CI-Mb!7qR2-vN9xK4p
           POSTGRES_HOST: db
           POSTGRES_PORT: "5432"
           POSTGRES_DB: elt_pipeline
@@ -158,7 +158,7 @@ jobs:
       - name: Verify Metabase can query Mart
         env:
           METABASE_ADMIN_EMAIL: ci-admin@example.com
-          METABASE_ADMIN_PASSWORD: ci-admin-password
+          METABASE_ADMIN_PASSWORD: CI-Mb!7qR2-vN9xK4p
           POSTGRES_HOST: db
           POSTGRES_PORT: "5432"
           POSTGRES_DB: elt_pipeline
