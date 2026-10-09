@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Retry Docker commands only for transient registry/network failures.
+# Retry commands only when their output indicates a transient registry/network failure.
 set -uo pipefail
 
 if [[ $# -eq 0 ]]; then
@@ -21,7 +21,7 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     exit 0
   fi
 
-  if ! grep -Eiq '429 Too Many Requests|408 Request Timeout|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout|TLS handshake timeout|unexpected EOF|connection reset by peer|i/o timeout|temporary failure in name resolution' "$log_file"; then
+  if ! grep -Eiq '429 Too Many Requests|toomanyrequests|pull rate limit|408 Request Timeout|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout|failed to fetch oauth token|TLS handshake timeout|unexpected EOF|connection reset by peer|i/o timeout|temporary failure in name resolution|context deadline exceeded|net/http: request canceled' "$log_file"; then
     echo "Command failed with exit code $status; error does not look transient, so it will not be retried." >&2
     exit "$status"
   fi
@@ -31,7 +31,8 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     exit "$status"
   fi
 
-  delay=$((5 * (2 ** (attempt - 1))))
-  echo "Transient Docker registry/network error detected. Retrying in ${delay}s..." >&2
+  # Exponential backoff: 10s, 20s, then 40s.
+  delay=$((10 * (2 ** (attempt - 1))))
+  echo "Transient registry/network error detected. Retrying in ${delay}s..." >&2
   sleep "$delay"
 done
