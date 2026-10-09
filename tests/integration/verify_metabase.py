@@ -12,35 +12,38 @@ def main() -> None:
         if response.status != 200:
             raise RuntimeError(f"Metabase health check failed: HTTP {response.status}")
 
-    connection = psycopg.connect(
-        host=os.environ["POSTGRES_HOST"],
-        port=int(os.environ["POSTGRES_PORT"]),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+    connection_settings = {
+        "host": os.environ["POSTGRES_HOST"],
+        "port": int(os.environ["POSTGRES_PORT"]),
+        "user": os.environ["POSTGRES_USER"],
+        "password": os.environ["POSTGRES_PASSWORD"],
+    }
 
-    try:
+    with psycopg.connect(dbname=os.environ["POSTGRES_DB"], **connection_settings) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("metabase",))
             if cursor.fetchone() is None:
                 raise RuntimeError("Metabase application database does not exist")
 
+    # Check the effect of Metabase's migrations instead of relying on the
+    # implementation-specific application_name value in pg_stat_activity.
+    with psycopg.connect(dbname="metabase", **connection_settings) as connection:
+        with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT 1
-                FROM pg_stat_activity
-                WHERE datname = 'metabase'
-                  AND application_name LIKE 'Metabase%'
-                LIMIT 1
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
                 """
             )
-            if cursor.fetchone() is None:
+            table_count = cursor.fetchone()[0]
+            if table_count == 0:
                 raise RuntimeError(
-                    "No active Metabase connection to the application database was found"
+                    "Metabase application database has no tables; migrations may not have completed"
                 )
-    finally:
-        connection.close()
+
+    print(f"Metabase is healthy and its application database has {table_count} tables.")
 
 
 if __name__ == "__main__":
