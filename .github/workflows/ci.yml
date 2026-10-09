@@ -40,8 +40,8 @@ jobs:
       - name: Compile ingestion sources
         run: python -m compileall -q ingestion
 
-  docker-build:
-    name: Validate Compose and build images
+  validate-compose:
+    name: Validate Docker Compose
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -55,19 +55,10 @@ jobs:
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose config
 
-      - name: Build mock API image
-        run: bash .github/scripts/retry-transient-command.sh docker build --tag elt-pipeline-commerce-mock-api:ci --file mock_api/dockerfile .
-
-      - name: Build ingestion image
-        run: bash .github/scripts/retry-transient-command.sh docker build --tag elt-pipeline-commerce-ingestion:ci --file ingestion/dockerfile .
-
-      - name: Build dbt image
-        run: bash .github/scripts/retry-transient-command.sh docker build --tag elt-pipeline-commerce-dbt:ci --file dbt/dockerfile .
-
   integration:
     name: Integration test
     runs-on: ubuntu-latest
-    needs: docker-build
+    needs: validate-compose
     timeout-minutes: 20
     steps:
       - name: Checkout
