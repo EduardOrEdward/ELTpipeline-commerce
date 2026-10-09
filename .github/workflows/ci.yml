@@ -88,7 +88,7 @@ jobs:
           S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
-        run: docker compose up -d --wait --wait-timeout 300 db mock_api seaweedfs
+        run: bash .github/scripts/retry-transient-command.sh docker compose up -d --wait --wait-timeout 300 db mock_api seaweedfs
 
       - name: Start Metabase
         env:
@@ -96,7 +96,7 @@ jobs:
           S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
-        run: docker compose up -d --wait --wait-timeout 180 metabase
+        run: bash .github/scripts/retry-transient-command.sh docker compose up -d --wait --wait-timeout 180 metabase
 
       - name: Test Metabase health
         run: curl --fail --silent http://localhost:3000/api/health
