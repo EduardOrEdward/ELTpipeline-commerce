@@ -118,7 +118,7 @@ jobs:
           S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
-        run: docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/configure_metabase.py
+        run: docker compose run --rm -e METABASE_ADMIN_EMAIL -e METABASE_ADMIN_PASSWORD -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/configure_metabase.py
 
       - name: Bootstrap S3 bucket
         env:
@@ -168,7 +168,7 @@ jobs:
           S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
-        run: docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_metabase_data_source.py
+        run: docker compose run --rm -e METABASE_ADMIN_EMAIL -e METABASE_ADMIN_PASSWORD -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_metabase_data_source.py
 
       - name: Show service logs on failure
         if: failure()
