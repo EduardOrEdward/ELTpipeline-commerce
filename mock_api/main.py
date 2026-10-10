@@ -6,6 +6,7 @@ import random
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from mock_api.health import health
 from mock_api.routers import orders, deliveries, inventory
 
 logger = logging.getLogger(__name__)
@@ -46,11 +47,7 @@ async def simulate_api_failures(request: Request, call_next):
     return await call_next(request)
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-app.include_router(router=orders.router)
-app.include_router(router=deliveries.router)
-app.include_router(router=inventory.router)
+app.include_router(health.router)
+app.include_router(orders.router)
+app.include_router(deliveries.router)
+app.include_router(inventory.router)
