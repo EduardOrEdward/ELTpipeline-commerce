@@ -20,7 +20,7 @@ deduplicated as (
     from source
     where delivery_id is not null
       and order_id is not null
-      and actual_quantity > 0
+      and actual_quantity >= 0
     order by delivery_id, ingested_at desc
 )
 
