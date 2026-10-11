@@ -40,6 +40,9 @@ jobs:
       - name: Compile ingestion sources
         run: python -m compileall -q ingestion
 
+      - name: Test MockAPI health endpoint
+        run: python -m unittest discover -s tests/unit -v
+
   validate-compose:
     name: Validate Docker Compose
     runs-on: ubuntu-latest
