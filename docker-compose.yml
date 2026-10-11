@@ -4,7 +4,7 @@ services:
     container_name: postgres_database
     environment:
       POSTGRES_USER: postgre_user
-      POSTGRES_PASSWORD: postgre_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
       POSTGRES_DB: elt_pipeline
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -134,3 +134,7 @@ services:
 
 volumes:
   postgres_data:
+
+networks:
+  default:
+    name: elt_pipeline_network
