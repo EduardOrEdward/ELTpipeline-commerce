@@ -1,7 +1,7 @@
 ARG AIRFLOW_VERSION=3.3.1
 FROM apache/airflow:${AIRFLOW_VERSION}
 
-ARG AIRFLOW_VERSION=3.3.1
+ARG AIRFLOW_VERSION
 
 # Keep Airflow's pinned dependency set intact while adding the libraries
 # needed to call the existing ingestion package and run dbt.
