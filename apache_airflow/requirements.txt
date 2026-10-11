@@ -1,0 +1,3 @@
+boto3==1.40.32
+psycopg[binary]==3.2.10
+dbt-postgres>=1.9,<2.0
