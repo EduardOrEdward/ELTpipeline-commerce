@@ -4,7 +4,7 @@ FROM apache/airflow:${AIRFLOW_VERSION}
 ARG AIRFLOW_VERSION
 
 # Keep Airflow's pinned dependency set intact while adding the libraries
-# needed to call the existing ingestion package and run dbt.
+# needed to call the existing ingestion package. dbt runs in its own environment.
 COPY --chown=airflow:root requirements.txt /requirements.txt
 
 USER airflow
