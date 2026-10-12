@@ -58,6 +58,17 @@ jobs:
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose config
 
+  airflow-smoke:
+    name: Airflow container smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and start Airflow API server
+        run: bash .github/scripts/test-airflow-startup.sh
+
   integration:
     name: Integration test
     runs-on: ubuntu-latest
