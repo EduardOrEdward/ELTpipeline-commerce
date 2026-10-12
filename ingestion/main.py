@@ -1,16 +1,16 @@
 """Entry point for one complete ingestion run.
 
-The main module orchestrates the ingestion stages only. It does not implement
-HTTP, object-storage, or database logic itself.
+A snapshot becomes eligible for Bronze only after every required dataset object
+and its completion manifest have been persisted to immutable object storage.
 """
 
 import logging
 from typing import Any
+from uuid import uuid4
 
 import psycopg
 
-from ingestion.bronze import ObjectStorageReader, load_objects_to_bronze
-from ingestion.client import APIClient
+from ingestion.bronze import ObjectStorageReader, load_snapshot_to_bronze
 from ingestion.config import (
     POSTGRES_DB,
     POSTGRES_HOST,
@@ -19,47 +19,63 @@ from ingestion.config import (
     POSTGRES_USER,
 )
 from ingestion.fetch import fetch_all
-from ingestion.storage import ObjectStorage, store_raw
+from ingestion.storage import (
+    ObjectStorage,
+    manifest_key_for_snapshot,
+    store_raw,
+)
 
 logger = logging.getLogger(__name__)
 
+REQUIRED_DATASETS = {"orders", "deliveries", "inventory"}
+
 
 def run_ingestion(
-    client: APIClient | None = None,
+    client: Any | None = None,
     storage: ObjectStorage | None = None,
     storage_reader: ObjectStorageReader | None = None,
     limit: int = 100,
     snapshot_date: str | None = None,
 ) -> dict[str, Any]:
-    """Run extraction, raw storage, and Bronze loading in order."""
+    """Extract, persist an immutable snapshot, then load it into Bronze."""
     if not POSTGRES_PASSWORD:
         raise RuntimeError("POSTGRES_PASSWORD must be set for an ingestion run")
 
     logger.info("Starting ingestion run")
-
-    # 1. Extract data from the source API.
     datasets = fetch_all(
         client=client,
         limit=limit,
         snapshot_date=snapshot_date,
     )
-    logger.info("Fetched datasets: %s", ", ".join(datasets))
+    if set(datasets) != REQUIRED_DATASETS:
+        raise RuntimeError(
+            "Incomplete extraction: expected datasets "
+            f"{sorted(REQUIRED_DATASETS)}, received {sorted(datasets)}"
+        )
+    logger.info("Fetched all required datasets: %s", ", ".join(sorted(datasets)))
 
-    # 2. Persist the untouched source data in object storage.
+    snapshot_id = uuid4().hex
+    writer = storage or ObjectStorage()
+
+    # The manifest is written last. If any data-object write fails, this call
+    # raises and the partial snapshot is never eligible for Bronze.
     object_keys_by_dataset = store_raw(
         datasets,
-        storage=storage,
+        storage=writer,
+        snapshot_id=snapshot_id,
     )
-    logger.info("Stored raw datasets in object storage")
+    manifest_key = manifest_key_for_snapshot(snapshot_id)
+    logger.info("Stored raw snapshot %s and its completion manifest", snapshot_id)
 
-    # 3. Read the raw objects back from object storage.
+    # Read back exactly what was persisted; Bronze must reflect S3, not an
+    # in-memory API response that could differ from the stored source.
     reader = storage_reader or ObjectStorageReader()
+    manifest = reader.get_json(manifest_key)
     raw_objects = {
-        object_key: reader.get_json(object_key)
-        for object_key in object_keys_by_dataset.values()
+        details["object_key"]: reader.get_json(details["object_key"])
+        for details in manifest.get("datasets", {}).values()
     }
 
-    # 4. Load the exact raw payloads into PostgreSQL Bronze.
     connection_config = {
         "host": POSTGRES_HOST,
         "port": POSTGRES_PORT,
@@ -69,16 +85,25 @@ def run_ingestion(
     }
 
     with psycopg.connect(**connection_config) as connection:
-        loaded_rows = load_objects_to_bronze(
+        bronze_result = load_snapshot_to_bronze(
             connection,
-            raw_objects,
+            snapshot_id=snapshot_id,
+            manifest_key=manifest_key,
+            manifest=manifest,
+            raw_objects=raw_objects,
         )
 
-    logger.info("Bronze loading completed: %s", loaded_rows)
-
+    logger.info(
+        "Bronze loading completed for snapshot %s: %s",
+        snapshot_id,
+        bronze_result,
+    )
     return {
+        "snapshot_id": snapshot_id,
+        "manifest_key": manifest_key,
         "object_keys": object_keys_by_dataset,
-        "bronze_rows": loaded_rows,
+        "bronze_rows": bronze_result["bronze_rows"],
+        "already_loaded": bronze_result["already_loaded"],
     }
 
 

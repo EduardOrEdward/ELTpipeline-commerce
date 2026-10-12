@@ -1,4 +1,4 @@
-"""Load raw objects from S3-compatible storage into PostgreSQL Bronze."""
+"""Load completed immutable raw snapshots into PostgreSQL Bronze."""
 
 import json
 from typing import Any, Protocol
@@ -12,12 +12,15 @@ from ingestion.config import (
     S3_ENDPOINT,
     S3_SECRET_KEY,
 )
+from ingestion.storage import manifest_key_for_snapshot
 
 
 class DatabaseConnection(Protocol):
     """Minimal DB-API connection interface required by this module."""
 
     def cursor(self) -> Any: ...
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
 
 
 DATASET_TABLES = {
@@ -61,19 +64,43 @@ class ObjectStorageReader:
 
 
 def _dataset_from_key(object_key: str) -> str:
-    """Extract the dataset name from an object key."""
+    """Extract and validate the dataset name from an object key."""
     dataset = object_key.split("/", 1)[0]
     if dataset not in DATASET_TABLES:
         raise ValueError(f"Unsupported Bronze dataset in object key: {object_key}")
     return dataset
 
 
-def load_object_to_bronze(
+def ensure_bronze_schema(connection: DatabaseConnection) -> None:
+    """Create snapshot tracking and idempotency structures, including on old volumes."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bronze.loaded_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                manifest_key TEXT NOT NULL,
+                loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        for dataset, table in DATASET_TABLES.items():
+            cursor.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS record_index INTEGER"
+            )
+            cursor.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {dataset}_source_record_uidx
+                ON {table} (source_object_key, record_index)
+                """
+            )
+
+
+def _insert_object_to_bronze(
     connection: DatabaseConnection,
     object_key: str,
     payload: Any,
 ) -> int:
-    """Insert every raw record from one object into its Bronze table."""
+    """Insert a raw array with stable per-object record indexes."""
     dataset = _dataset_from_key(object_key)
     table = DATASET_TABLES[dataset]
 
@@ -83,27 +110,44 @@ def load_object_to_bronze(
     if not payload:
         return 0
 
-    query = f"INSERT INTO {table} (source_object_key, raw_payload) VALUES (%s, %s::jsonb)"
-
+    query = f"""
+        INSERT INTO {table} (source_object_key, record_index, raw_payload)
+        VALUES (%s, %s, %s::jsonb)
+        ON CONFLICT (source_object_key, record_index) DO NOTHING
+    """
     with connection.cursor() as cursor:
         cursor.executemany(
             query,
-            [(object_key, json.dumps(record, ensure_ascii=False)) for record in payload],
+            [
+                (object_key, index, json.dumps(record, ensure_ascii=False))
+                for index, record in enumerate(payload)
+            ],
         )
+        # psycopg 3 reports the total number of rows affected by executemany.
+        return max(cursor.rowcount, 0)
 
-    return len(payload)
+
+def load_object_to_bronze(
+    connection: DatabaseConnection,
+    object_key: str,
+    payload: Any,
+) -> int:
+    """Insert one object idempotently; transaction ownership stays with caller."""
+    ensure_bronze_schema(connection)
+    return _insert_object_to_bronze(connection, object_key, payload)
 
 
 def load_objects_to_bronze(
     connection: DatabaseConnection,
     objects: dict[str, Any],
 ) -> dict[str, int]:
-    """Load multiple raw objects into Bronze in one database transaction."""
+    """Load raw objects in one transaction, with per-record duplicate protection."""
     loaded: dict[str, int] = {}
 
     try:
+        ensure_bronze_schema(connection)
         for object_key, payload in objects.items():
-            loaded[object_key] = load_object_to_bronze(
+            loaded[object_key] = _insert_object_to_bronze(
                 connection,
                 object_key,
                 payload,
@@ -114,3 +158,99 @@ def load_objects_to_bronze(
         raise
 
     return loaded
+
+
+def _validate_completed_snapshot(
+    snapshot_id: str,
+    manifest_key: str,
+    manifest: dict[str, Any],
+    raw_objects: dict[str, Any],
+) -> dict[str, str]:
+    """Validate manifest identity, completeness, and the objects supplied for loading."""
+    if manifest.get("snapshot_id") != snapshot_id:
+        raise ValueError("Snapshot ID does not match the S3 manifest")
+    if manifest_key != manifest_key_for_snapshot(snapshot_id):
+        raise ValueError("Unexpected S3 manifest key")
+    if manifest.get("status") != "COMPLETED":
+        raise ValueError("Only COMPLETED snapshots may be loaded into Bronze")
+
+    datasets = manifest.get("datasets")
+    if not isinstance(datasets, dict) or set(datasets) != set(DATASET_TABLES):
+        raise ValueError("Snapshot manifest must contain orders, deliveries, and inventory")
+
+    object_keys: dict[str, str] = {}
+    for dataset, details in datasets.items():
+        if not isinstance(details, dict):
+            raise ValueError(f"Invalid manifest entry for dataset {dataset}")
+        object_key = details.get("object_key")
+        if not isinstance(object_key, str) or _dataset_from_key(object_key) != dataset:
+            raise ValueError(f"Invalid object key for dataset {dataset}")
+        payload = raw_objects.get(object_key)
+        if not isinstance(payload, list):
+            raise ValueError(f"Missing or invalid raw object: {object_key}")
+        if details.get("record_count") != len(payload):
+            raise ValueError(f"Record count mismatch for raw object: {object_key}")
+        object_keys[dataset] = object_key
+
+    if set(raw_objects) != set(object_keys.values()):
+        raise ValueError("Loaded objects do not exactly match the snapshot manifest")
+
+    return object_keys
+
+
+def load_snapshot_to_bronze(
+    connection: DatabaseConnection,
+    snapshot_id: str,
+    manifest_key: str,
+    manifest: dict[str, Any],
+    raw_objects: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically load one completed snapshot and register it for replay safety."""
+    object_keys_by_dataset = _validate_completed_snapshot(
+        snapshot_id,
+        manifest_key,
+        manifest,
+        raw_objects,
+    )
+
+    try:
+        ensure_bronze_schema(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bronze.loaded_snapshots (snapshot_id, manifest_key)
+                VALUES (%s, %s)
+                ON CONFLICT (snapshot_id) DO NOTHING
+                RETURNING snapshot_id
+                """,
+                (snapshot_id, manifest_key),
+            )
+            inserted_snapshot = cursor.fetchone()
+
+        if inserted_snapshot is None:
+            # This exact snapshot has already committed to Bronze.
+            connection.commit()
+            return {
+                "snapshot_id": snapshot_id,
+                "already_loaded": True,
+                "bronze_rows": {},
+            }
+
+        loaded_rows: dict[str, int] = {}
+        for dataset, object_key in object_keys_by_dataset.items():
+            loaded_rows[object_key] = _insert_object_to_bronze(
+                connection,
+                object_key,
+                raw_objects[object_key],
+            )
+
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+    return {
+        "snapshot_id": snapshot_id,
+        "already_loaded": False,
+        "bronze_rows": loaded_rows,
+    }
