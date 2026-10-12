@@ -139,39 +139,6 @@ def _insert_object_to_bronze(
         return max(cursor.rowcount, 0)
 
 
-def load_object_to_bronze(
-    connection: DatabaseConnection,
-    object_key: str,
-    payload: Any,
-) -> int:
-    """Insert one object idempotently; transaction ownership stays with caller."""
-    ensure_bronze_schema(connection)
-    return _insert_object_to_bronze(connection, object_key, payload)
-
-
-def load_objects_to_bronze(
-    connection: DatabaseConnection,
-    objects: dict[str, Any],
-) -> dict[str, int]:
-    """Load raw objects in one transaction, with per-record duplicate protection."""
-    loaded: dict[str, int] = {}
-
-    try:
-        ensure_bronze_schema(connection)
-        for object_key, payload in objects.items():
-            loaded[object_key] = _insert_object_to_bronze(
-                connection,
-                object_key,
-                payload,
-            )
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-
-    return loaded
-
-
 def _validate_completed_snapshot(
     snapshot_id: str,
     manifest_key: str,
