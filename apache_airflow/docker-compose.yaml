@@ -45,7 +45,7 @@
 ---
 x-airflow-common:
   &airflow-common
-  # Build the project image with ingestion and dbt dependencies.
+  # Build the Airflow image with only its orchestration and ingestion dependencies.
   image: elt-pipeline-airflow:local
   build: .
   env_file:
@@ -84,7 +84,6 @@ x-airflow-common:
     POSTGRES_DB: elt_pipeline
     POSTGRES_USER: postgre_user
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
-    DBT_PROFILES_DIR: /opt/airflow/dbt
     PYTHONPATH: /opt/airflow
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
@@ -92,7 +91,6 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ../ingestion:/opt/airflow/ingestion:ro
-    - ../dbt:/opt/airflow/dbt:ro
   networks:
     - default
     - elt_pipeline_network
