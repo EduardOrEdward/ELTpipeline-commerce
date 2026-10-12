@@ -4,13 +4,18 @@ A snapshot becomes eligible for Bronze only after every required dataset object
 and its completion manifest have been persisted to immutable object storage.
 """
 
+import argparse
 import logging
 from typing import Any
 from uuid import uuid4
 
 import psycopg
 
-from ingestion.bronze import ObjectStorageReader, load_snapshot_to_bronze
+from ingestion.bronze import (
+    ObjectStorageReader,
+    ensure_bronze_schema,
+    load_snapshot_to_bronze,
+)
 from ingestion.config import (
     POSTGRES_DB,
     POSTGRES_HOST,
@@ -107,13 +112,89 @@ def run_ingestion(
     }
 
 
+def restore_bronze_from_s3(
+    storage_reader: ObjectStorageReader | None = None,
+) -> dict[str, int]:
+    """Rebuild Bronze from every completed snapshot manifest in S3, without calling the API."""
+    if not POSTGRES_PASSWORD:
+        raise RuntimeError("POSTGRES_PASSWORD must be set for a Bronze restore")
+
+    reader = storage_reader or ObjectStorageReader()
+    manifest_keys = reader.list_manifest_keys()
+    if not manifest_keys:
+        raise RuntimeError("No snapshot manifests found in S3; Bronze cannot be restored")
+
+    connection_config = {
+        "host": POSTGRES_HOST,
+        "port": POSTGRES_PORT,
+        "dbname": POSTGRES_DB,
+        "user": POSTGRES_USER,
+        "password": POSTGRES_PASSWORD,
+    }
+    loaded = 0
+    skipped = 0
+
+    with psycopg.connect(**connection_config) as connection:
+        # Run DDL once rather than once per snapshot during a full rebuild.
+        ensure_bronze_schema(connection)
+        connection.commit()
+
+        for manifest_key in manifest_keys:
+            manifest = reader.get_json(manifest_key)
+            if not isinstance(manifest, dict):
+                raise ValueError(f"Invalid snapshot manifest: {manifest_key}")
+            if manifest.get("status") != "COMPLETED":
+                logger.warning("Skipping non-completed snapshot manifest: %s", manifest_key)
+                skipped += 1
+                continue
+
+            snapshot_id = manifest.get("snapshot_id")
+            datasets = manifest.get("datasets")
+            if not isinstance(snapshot_id, str) or not isinstance(datasets, dict):
+                raise ValueError(f"Invalid snapshot manifest: {manifest_key}")
+
+            raw_objects = {}
+            for details in datasets.values():
+                if not isinstance(details, dict) or not isinstance(details.get("object_key"), str):
+                    raise ValueError(f"Invalid dataset entry in manifest: {manifest_key}")
+                object_key = details["object_key"]
+                raw_objects[object_key] = reader.get_json(object_key)
+
+            result = load_snapshot_to_bronze(
+                connection,
+                snapshot_id=snapshot_id,
+                manifest_key=manifest_key,
+                manifest=manifest,
+                raw_objects=raw_objects,
+                ensure_schema=False,
+            )
+            if result["already_loaded"]:
+                skipped += 1
+            else:
+                loaded += 1
+
+    logger.info("Bronze restore finished: loaded=%s skipped=%s", loaded, skipped)
+    return {"loaded_snapshots": loaded, "skipped_snapshots": skipped}
+
+
 def main() -> None:
-    """Run one ingestion job from the command line."""
+    """Run ingestion, or rebuild Bronze from S3 when explicitly requested."""
+    parser = argparse.ArgumentParser(description="ELT ingestion and Bronze recovery")
+    parser.add_argument(
+        "--restore-bronze",
+        action="store_true",
+        help="rebuild Bronze from completed S3 snapshots without calling the API",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    run_ingestion()
+    if args.restore_bronze:
+        restore_bronze_from_s3()
+    else:
+        run_ingestion()
 
 
 if __name__ == "__main__":
