@@ -20,6 +20,11 @@ export AIRFLOW__API_AUTH__JWT_SECRET="airflow-ci-jwt-secret"
 export ENV_FILE_PATH="../.env.airflow-ci"
 
 cleanup() {
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    "${compose[@]}" ps || true
+    "${compose[@]}" logs --no-color || true
+  fi
   if [[ "${KEEP_AIRFLOW_TEST_STACK:-0}" != "1" ]]; then
     "${compose[@]}" down --volumes --remove-orphans || true
     rm -f "$env_file"
@@ -52,7 +57,3 @@ curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-connrefused
 
 echo
 echo "Airflow API server started and passed its health endpoint."
-
-if [[ "${KEEP_AIRFLOW_TEST_STACK:-0}" != "1" ]]; then
-  exit 0
-fi
