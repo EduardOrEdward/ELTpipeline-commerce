@@ -1,4 +1,4 @@
-"""Verify the end-to-end ingestion boundaries in CI."""
+"""Verify immutable snapshot and Bronze boundaries in CI."""
 
 import json
 import os
@@ -10,6 +10,9 @@ from urllib.request import Request, urlopen
 import boto3
 import psycopg
 from botocore.client import Config
+from botocore.exceptions import ClientError
+
+from ingestion.bronze import load_snapshot_to_bronze
 
 
 API_BASE_URL = "http://mock_api:8000"
@@ -87,15 +90,72 @@ def canonical_records(records):
     )
 
 
+def verify_immutable_object(client, object_key: str, original_payload) -> None:
+    """A conditional write to an existing key must fail without changing it."""
+    try:
+        client.put_object(
+            Bucket=S3_BUCKET,
+            Key=object_key,
+            Body=b'{"overwrite":"must-not-happen"}',
+            ContentType="application/json",
+            IfNoneMatch="*",
+        )
+    except ClientError as exc:
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        code = exc.response.get("Error", {}).get("Code")
+        if status not in (409, 412) and code not in (
+            "PreconditionFailed",
+            "ConditionalRequestConflict",
+        ):
+            raise AssertionError(
+                f"Conditional write failed for an unexpected reason: {code} ({status})"
+            ) from exc
+    else:
+        raise AssertionError(f"Existing S3 object was overwritten: {object_key}")
+
+    if get_s3_json(client, object_key) != original_payload:
+        raise AssertionError(f"S3 object changed after rejected overwrite: {object_key}")
+
+
 def verify_bronze() -> None:
     s3_client = create_s3_client()
 
     with psycopg.connect(**DB_CONFIG) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT snapshot_id, manifest_key
+                FROM bronze.loaded_snapshots
+                ORDER BY snapshot_id
+                """
+            )
+            snapshots = cursor.fetchall()
+
+        if not snapshots:
+            raise AssertionError("No completed snapshots are registered in Bronze")
+
+        expected_objects = set()
+        manifests = {}
+        for snapshot_id, manifest_key in snapshots:
+            manifest = get_s3_json(s3_client, manifest_key)
+            if manifest.get("snapshot_id") != snapshot_id:
+                raise AssertionError(f"Snapshot ID mismatch in {manifest_key}")
+            if manifest.get("status") != "COMPLETED":
+                raise AssertionError(f"Non-completed snapshot was loaded: {manifest_key}")
+            if set(manifest.get("datasets", {})) != set(DATASETS):
+                raise AssertionError(f"Incomplete dataset list in {manifest_key}")
+            manifests[snapshot_id] = (manifest_key, manifest)
+            expected_objects.update(
+                details["object_key"] for details in manifest["datasets"].values()
+            )
+
+        actual_objects = set()
+        total_rows_by_table = {}
         for dataset, table in DATASETS.items():
             with connection.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT source_object_key, raw_payload
+                    SELECT source_object_key, record_index, raw_payload
                     FROM {table}
                     WHERE source_object_key IS NOT NULL
                     """
@@ -105,47 +165,78 @@ def verify_bronze() -> None:
             if not rows:
                 raise AssertionError(f"Bronze table {table} is empty")
 
-            object_keys = sorted({row[0] for row in rows})
-            if not object_keys:
-                raise AssertionError(f"No source object keys found in {table}")
+            table_objects = {row[0] for row in rows}
+            actual_objects.update(table_objects)
+            total_rows_by_table[table] = len(rows)
 
-            for object_key in object_keys:
-                payload = get_s3_json(s3_client, object_key)
-
-                if not isinstance(payload, list) or not payload:
+            for object_key in sorted(table_objects):
+                if object_key not in expected_objects:
                     raise AssertionError(
-                        f"SeaweedFS object is empty or invalid: {object_key}"
+                        f"Bronze references an object outside completed snapshots: {object_key}"
                     )
+                payload = get_s3_json(s3_client, object_key)
+                if not isinstance(payload, list):
+                    raise AssertionError(f"SeaweedFS object is not a JSON array: {object_key}")
 
-                bronze_records = [
-                    row[1]
-                    for row in rows
-                    if row[0] == object_key
-                ]
-
-                if len(bronze_records) != len(payload):
+                bronze_rows = [row for row in rows if row[0] == object_key]
+                if len(bronze_rows) != len(payload):
                     raise AssertionError(
                         f"{dataset}: row count mismatch for {object_key}: "
-                        f"SeaweedFS={len(payload)}, Bronze={len(bronze_records)}"
+                        f"SeaweedFS={len(payload)}, Bronze={len(bronze_rows)}"
                     )
-
-                if canonical_records(payload) != canonical_records(bronze_records):
+                if sorted(row[1] for row in bronze_rows) != list(range(len(payload))):
+                    raise AssertionError(f"{dataset}: record indexes are not complete for {object_key}")
+                if canonical_records(payload) != canonical_records(
+                    [row[2] for row in bronze_rows]
+                ):
                     raise AssertionError(
-                        f"{dataset}: Bronze payload differs from SeaweedFS object "
-                        f"{object_key}"
+                        f"{dataset}: Bronze payload differs from S3 object {object_key}"
                     )
 
-            print(
-                f"[OK] {dataset}: "
-                f"{len(rows)} Bronze rows verified against {len(object_keys)} raw object(s)"
+            print(f"[OK] {dataset}: {len(rows)} Bronze rows verified")
+
+        if actual_objects != expected_objects:
+            missing = sorted(expected_objects - actual_objects)
+            unexpected = sorted(actual_objects - expected_objects)
+            raise AssertionError(
+                f"Bronze/S3 object coverage mismatch; missing={missing}, unexpected={unexpected}"
             )
+
+        # Replaying an already loaded snapshot must be a no-op.
+        snapshot_id, (manifest_key, manifest) = next(iter(manifests.items()))
+        raw_objects = {
+            details["object_key"]: get_s3_json(s3_client, details["object_key"])
+            for details in manifest["datasets"].values()
+        }
+        result = load_snapshot_to_bronze(
+            connection,
+            snapshot_id,
+            manifest_key,
+            manifest,
+            raw_objects,
+        )
+        if not result["already_loaded"] or result["bronze_rows"]:
+            raise AssertionError(f"Replaying a loaded snapshot was not a no-op: {result}")
+
+        # Verify the raw object is protected against overwrite.
+        first_dataset = next(iter(manifest["datasets"].values()))
+        object_key = first_dataset["object_key"]
+        verify_immutable_object(
+            s3_client,
+            object_key,
+            get_s3_json(s3_client, object_key),
+        )
+
+        print(
+            f"[OK] {len(snapshots)} completed snapshot(s), immutable S3 objects, "
+            "and idempotent Bronze replay verified"
+        )
 
 
 def main() -> None:
     wait_for_api()
     verify_api_contract()
     print("[OK] Mock API returned successful non-empty JSON responses")
-
     verify_bronze()
     print("[OK] End-to-end ingestion boundaries verified")
 

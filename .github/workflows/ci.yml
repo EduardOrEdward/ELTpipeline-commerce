@@ -158,7 +158,33 @@ jobs:
           S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
-        run: docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
+        run: docker compose run --rm -e PYTHONPATH=/app -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
+
+      - name: Simulate PostgreSQL Bronze loss
+        env:
+          S3_ACCESS_KEY: ci-ingestion
+          S3_SECRET_KEY: ci-secret
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
+        run: |
+          docker compose exec -T db psql -U postgre_user -d elt_pipeline -c "TRUNCATE TABLE bronze.orders, bronze.deliveries, bronze.inventory, bronze.loaded_snapshots"
+
+      - name: Restore Bronze from completed S3 snapshots
+        env:
+          POSTGRES_PASSWORD: postgre_password
+          S3_ACCESS_KEY: ci-ingestion
+          S3_SECRET_KEY: ci-secret
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
+        run: docker compose run --rm ingestion python -m ingestion.main --restore-bronze
+
+      - name: Verify restored Bronze
+        env:
+          S3_ACCESS_KEY: ci-ingestion
+          S3_SECRET_KEY: ci-secret
+          S3_ADMIN_ACCESS_KEY: ci-admin
+          S3_ADMIN_SECRET_KEY: ci-admin-secret
+        run: docker compose run --rm -e PYTHONPATH=/app -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
 
       - name: Run dbt models and tests
         env:
