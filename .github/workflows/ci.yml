@@ -158,7 +158,7 @@ jobs:
           S3_SECRET_KEY: ci-secret
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
-        run: docker compose run --rm -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
+        run: docker compose run --rm -e PYTHONPATH=/app -v "${{ github.workspace }}/tests:/tests:ro" ingestion python /tests/integration/verify_pipeline.py
 
       - name: Run dbt models and tests
         env:
