@@ -62,6 +62,18 @@ class ObjectStorageReader:
         )
         return json.loads(response["Body"].read().decode("utf-8"))
 
+    def list_manifest_keys(self) -> list[str]:
+        """List snapshot manifests available for a full Bronze rebuild."""
+        paginator = self.client.get_paginator("list_objects_v2")
+        keys = []
+        for page in paginator.paginate(Bucket=self.bucket, Prefix="snapshots/"):
+            keys.extend(
+                item["Key"]
+                for item in page.get("Contents", [])
+                if item["Key"].endswith("/manifest.json")
+            )
+        return sorted(keys)
+
 
 def _dataset_from_key(object_key: str) -> str:
     """Extract and validate the dataset name from an object key."""
@@ -204,6 +216,7 @@ def load_snapshot_to_bronze(
     manifest_key: str,
     manifest: dict[str, Any],
     raw_objects: dict[str, Any],
+    ensure_schema: bool = True,
 ) -> dict[str, Any]:
     """Atomically load one completed snapshot and register it for replay safety."""
     object_keys_by_dataset = _validate_completed_snapshot(
@@ -214,7 +227,8 @@ def load_snapshot_to_bronze(
     )
 
     try:
-        ensure_bronze_schema(connection)
+        if ensure_schema:
+            ensure_bronze_schema(connection)
         with connection.cursor() as cursor:
             cursor.execute(
                 """
