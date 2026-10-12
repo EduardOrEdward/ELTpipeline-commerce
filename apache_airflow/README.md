@@ -20,7 +20,7 @@ Run commands from the repository root. Ensure the root `.env` file contains the 
 
 3. Open the Airflow UI at [http://localhost:8080](http://localhost:8080). The local Compose defaults create the user `airflow` with password `airflow`; change these defaults for any shared or non-local deployment.
 
-The custom Airflow image includes the Python libraries needed by the existing `ingestion` package and the dbt CLI. The `ingestion/` and `dbt/` directories are mounted read-only into Airflow containers, and their service settings are passed through environment variables. The existing PostgreSQL service is reachable as `db:5432`, MockAPI as `mock_api:8000`, and SeaweedFS S3 as `seaweedfs:8333`.
+The custom Airflow image includes only the Python libraries needed by the existing `ingestion` package. The `ingestion/` directory is mounted read-only into Airflow containers. dbt keeps its own image and dependency environment, separate from Airflow. The existing PostgreSQL service is reachable as `db:5432`, MockAPI as `mock_api:8000`, and SeaweedFS S3 as `seaweedfs:8333`.
 
 ## Stop Airflow
 
