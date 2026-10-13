@@ -1,16 +1,18 @@
-"""Raw object storage for the ingestion layer.
+"""Raw object storage for ingestion snapshots and their catalog.
 
-Raw objects and completed snapshot manifests are immutable. A manifest is
-written only after every dataset object has been stored successfully.
+Dataset objects and completed manifests are immutable. The mutable catalog is a
+small index that lets a restricted reader find manifests without S3 ListBucket.
 """
 
 from datetime import datetime, timezone
 import json
+import time
 from typing import Any
 from uuid import uuid4
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from ingestion.config import (
     S3_ACCESS_KEY,
@@ -19,14 +21,37 @@ from ingestion.config import (
     S3_SECRET_KEY,
 )
 
+SNAPSHOT_CATALOG_KEY = "snapshots/catalog.json"
+CATALOG_FORMAT_VERSION = 1
+CATALOG_WRITE_ATTEMPTS = 5
+
 
 def manifest_key_for_snapshot(snapshot_id: str) -> str:
     """Return the stable manifest key for a snapshot."""
     return f"snapshots/{snapshot_id}/manifest.json"
 
 
+def _is_not_found_error(error: ClientError) -> bool:
+    """Return whether an S3 error specifically means that the object is absent."""
+    response = error.response
+    code = response.get("Error", {}).get("Code")
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in {"NoSuchKey", "NotFound", "404"} or status == 404
+
+
+def _is_conditional_conflict(error: ClientError) -> bool:
+    """Return whether a conditional catalog write lost a race."""
+    response = error.response
+    code = response.get("Error", {}).get("Code")
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return status in {409, 412} or code in {
+        "PreconditionFailed",
+        "ConditionalRequestConflict",
+    }
+
+
 class ObjectStorage:
-    """S3-compatible immutable object writer for SeaweedFS."""
+    """S3-compatible writer for immutable objects and a concurrency-safe catalog."""
 
     def __init__(
         self,
@@ -49,15 +74,13 @@ class ObjectStorage:
         )
 
     def put_json(self, object_key: str, data: Any) -> None:
-        """Write JSON only if the key does not already exist."""
+        """Write immutable JSON only if the key does not already exist."""
         payload = json.dumps(
             data,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
 
-        # Conditional writes make accidental overwrites fail instead of
-        # silently changing the raw source of truth.
         self.client.put_object(
             Bucket=self.bucket,
             Key=object_key.lstrip("/"),
@@ -65,6 +88,107 @@ class ObjectStorage:
             ContentType="application/json",
             IfNoneMatch="*",
         )
+
+    def get_json(self, object_key: str) -> Any:
+        """Download and decode one JSON object."""
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=object_key.lstrip("/"),
+        )
+        return json.loads(response["Body"].read().decode("utf-8"))
+
+    def register_snapshot(
+        self,
+        snapshot_id: str,
+        manifest_key: str,
+        timestamp: datetime | None = None,
+    ) -> None:
+        """Add a manifest reference to the catalog without requiring ListBucket.
+
+        Conditional writes prevent concurrent ingestion runs from silently
+        overwriting one another's catalog updates. A catalog entry is an index
+        entry, not proof that the snapshot is complete: the manifest is still
+        written last and is the authoritative completion marker.
+        """
+        timestamp = timestamp or datetime.now(timezone.utc)
+        timestamp = timestamp.astimezone(timezone.utc)
+        new_entry = {
+            "snapshot_id": snapshot_id,
+            "manifest_key": manifest_key,
+            "created_at": timestamp.isoformat(),
+        }
+
+        for attempt in range(CATALOG_WRITE_ATTEMPTS):
+            etag = None
+            try:
+                response = self.client.get_object(
+                    Bucket=self.bucket,
+                    Key=SNAPSHOT_CATALOG_KEY,
+                )
+            except ClientError as error:
+                if not _is_not_found_error(error):
+                    raise
+                catalog = {
+                    "format_version": CATALOG_FORMAT_VERSION,
+                    "snapshots": [],
+                }
+            else:
+                etag = response.get("ETag")
+                catalog = json.loads(response["Body"].read().decode("utf-8"))
+
+            if (
+                not isinstance(catalog, dict)
+                or catalog.get("format_version") != CATALOG_FORMAT_VERSION
+                or not isinstance(catalog.get("snapshots"), list)
+            ):
+                raise ValueError(f"Invalid snapshot catalog: {SNAPSHOT_CATALOG_KEY}")
+
+            existing = {
+                item.get("snapshot_id"): item
+                for item in catalog["snapshots"]
+                if isinstance(item, dict) and isinstance(item.get("snapshot_id"), str)
+            }
+            previous = existing.get(snapshot_id)
+            if previous is not None:
+                if previous.get("manifest_key") != manifest_key:
+                    raise ValueError(
+                        f"Snapshot {snapshot_id} is already registered with another manifest"
+                    )
+                return
+
+            catalog["snapshots"].append(new_entry)
+            catalog["snapshots"].sort(
+                key=lambda item: (item.get("created_at", ""), item["snapshot_id"])
+            )
+            payload = json.dumps(
+                catalog,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            write_args = {
+                "Bucket": self.bucket,
+                "Key": SNAPSHOT_CATALOG_KEY,
+                "Body": payload,
+                "ContentType": "application/json",
+            }
+            if etag is None:
+                write_args["IfNoneMatch"] = "*"
+            else:
+                write_args["IfMatch"] = etag
+
+            try:
+                self.client.put_object(**write_args)
+                return
+            except ClientError as error:
+                if not _is_conditional_conflict(error):
+                    raise
+                if attempt == CATALOG_WRITE_ATTEMPTS - 1:
+                    raise RuntimeError(
+                        "Could not update the snapshot catalog after concurrent writes"
+                    ) from error
+                time.sleep(0.05 * (attempt + 1))
+
+        raise RuntimeError("Could not update the snapshot catalog")
 
     def write_dataset(
         self,
@@ -76,9 +200,7 @@ class ObjectStorage:
         """Write one dataset as an immutable object belonging to a snapshot."""
         timestamp = timestamp or datetime.now(timezone.utc)
         timestamp = timestamp.astimezone(timezone.utc)
-        object_key = (
-            f"{dataset}/{timestamp:%Y-%m-%d}/{snapshot_id}.json"
-        )
+        object_key = f"{dataset}/{timestamp:%Y-%m-%d}/{snapshot_id}.json"
         self.put_json(object_key, data)
         return object_key
 
@@ -109,7 +231,6 @@ class ObjectStorage:
             },
         }
         manifest_key = manifest_key_for_snapshot(snapshot_id)
-        # The manifest is created once, after every data object succeeded.
         self.put_json(manifest_key, manifest)
         return manifest_key
 
@@ -120,10 +241,11 @@ def store_raw(
     timestamp: datetime | None = None,
     snapshot_id: str | None = None,
 ) -> dict[str, str]:
-    """Store all datasets, then publish a manifest marking the snapshot complete.
+    """Store datasets, register the manifest key, then publish completion.
 
-    If any dataset write fails, no completion manifest is written and the
-    caller must not load the partial snapshot into Bronze.
+    If a dataset or catalog write fails, no completion manifest is written.
+    A catalog entry can temporarily point to a missing manifest if manifest
+    creation fails; restore ignores such entries and never loads partial data.
     """
     if not datasets:
         raise ValueError("Cannot store an empty snapshot")
@@ -146,7 +268,10 @@ def store_raw(
             timestamp=timestamp,
         )
 
-    # This is the commit marker for the snapshot. It is intentionally last.
+    # Register before publishing the manifest. The manifest remains the
+    # completion marker and is always the final write for a successful run.
+    manifest_key = manifest_key_for_snapshot(snapshot_id)
+    storage.register_snapshot(snapshot_id, manifest_key, timestamp=timestamp)
     storage.write_manifest(
         snapshot_id=snapshot_id,
         object_keys_by_dataset=object_keys_by_dataset,
