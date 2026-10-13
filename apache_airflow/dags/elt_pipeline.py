@@ -53,6 +53,7 @@ with DAG(
         auto_remove="success",
         do_xcom_push=False,
         environment={
+            "DBT_PROFILES_DIR": "/app",
             "POSTGRES_HOST": "{{ env_var('POSTGRES_HOST') }}",
             "POSTGRES_PORT": "{{ env_var('POSTGRES_PORT') }}",
             "POSTGRES_DB": "{{ env_var('POSTGRES_DB') }}",
