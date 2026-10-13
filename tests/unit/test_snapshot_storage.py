@@ -3,20 +3,31 @@
 import unittest
 from datetime import datetime, timezone
 
-from ingestion.storage import store_raw
+from ingestion.storage import manifest_key_for_snapshot, store_raw
 
 
 class FakeStorage:
-    def __init__(self, fail_dataset=None):
+    def __init__(self, fail_dataset=None, fail_catalog=False):
         self.fail_dataset = fail_dataset
+        self.fail_catalog = fail_catalog
         self.events = []
         self.manifest = None
+        self.catalog = []
 
     def write_dataset(self, dataset, data, snapshot_id, timestamp=None):
         self.events.append(("dataset", dataset))
         if dataset == self.fail_dataset:
             raise RuntimeError(f"simulated write failure for {dataset}")
         return f"{dataset}/2026-10-12/{snapshot_id}.json"
+
+    def register_snapshot(self, snapshot_id, manifest_key, timestamp=None):
+        self.events.append(("catalog", snapshot_id))
+        if self.fail_catalog:
+            raise RuntimeError("simulated catalog write failure")
+        self.catalog.append({
+            "snapshot_id": snapshot_id,
+            "manifest_key": manifest_key,
+        })
 
     def write_manifest(
         self,
@@ -45,7 +56,7 @@ class StoreRawTests(unittest.TestCase):
         }
         self.timestamp = datetime(2026, 10, 12, tzinfo=timezone.utc)
 
-    def test_manifest_is_published_after_all_dataset_objects(self):
+    def test_catalog_is_registered_and_manifest_is_published_last(self):
         storage = FakeStorage()
         object_keys = store_raw(
             self.datasets,
@@ -56,7 +67,7 @@ class StoreRawTests(unittest.TestCase):
 
         self.assertEqual(
             [event[0] for event in storage.events],
-            ["dataset", "dataset", "dataset", "manifest"],
+            ["dataset", "dataset", "dataset", "catalog", "manifest"],
         )
         self.assertEqual(set(object_keys), set(self.datasets))
         self.assertEqual(storage.manifest["snapshot_id"], "snapshot-test")
@@ -65,8 +76,15 @@ class StoreRawTests(unittest.TestCase):
             storage.manifest["record_counts"],
             {"orders": 1, "deliveries": 1, "inventory": 1},
         )
+        self.assertEqual(
+            storage.catalog,
+            [{
+                "snapshot_id": "snapshot-test",
+                "manifest_key": manifest_key_for_snapshot("snapshot-test"),
+            }],
+        )
 
-    def test_failed_dataset_write_does_not_publish_manifest(self):
+    def test_failed_dataset_write_does_not_register_or_publish_snapshot(self):
         storage = FakeStorage(fail_dataset="deliveries")
 
         with self.assertRaisesRegex(RuntimeError, "simulated write failure"):
@@ -75,6 +93,22 @@ class StoreRawTests(unittest.TestCase):
                 storage=storage,
                 timestamp=self.timestamp,
                 snapshot_id="snapshot-partial",
+            )
+
+        self.assertIsNone(storage.manifest)
+        self.assertEqual(storage.catalog, [])
+        self.assertNotIn("catalog", [event[0] for event in storage.events])
+        self.assertNotIn("manifest", [event[0] for event in storage.events])
+
+    def test_failed_catalog_write_does_not_publish_manifest(self):
+        storage = FakeStorage(fail_catalog=True)
+
+        with self.assertRaisesRegex(RuntimeError, "simulated catalog write failure"):
+            store_raw(
+                self.datasets,
+                storage=storage,
+                timestamp=self.timestamp,
+                snapshot_id="snapshot-catalog-failure",
             )
 
         self.assertIsNone(storage.manifest)
