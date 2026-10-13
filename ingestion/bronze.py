@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from ingestion.config import (
     S3_ACCESS_KEY,
@@ -12,7 +13,11 @@ from ingestion.config import (
     S3_ENDPOINT,
     S3_SECRET_KEY,
 )
-from ingestion.storage import manifest_key_for_snapshot
+from ingestion.storage import (
+    CATALOG_FORMAT_VERSION,
+    SNAPSHOT_CATALOG_KEY,
+    manifest_key_for_snapshot,
+)
 
 
 class DatabaseConnection(Protocol):
@@ -30,8 +35,16 @@ DATASET_TABLES = {
 }
 
 
+def _is_not_found_error(error: ClientError) -> bool:
+    """Return whether an S3 error specifically means that an object is absent."""
+    response = error.response
+    code = response.get("Error", {}).get("Code")
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in {"NoSuchKey", "NotFound", "404"} or status == 404
+
+
 class ObjectStorageReader:
-    """Read raw JSON objects from the S3-compatible SeaweedFS endpoint."""
+    """Read raw JSON from SeaweedFS without requiring S3 ListBucket permission."""
 
     def __init__(
         self,
@@ -63,16 +76,43 @@ class ObjectStorageReader:
         return json.loads(response["Body"].read().decode("utf-8"))
 
     def list_manifest_keys(self) -> list[str]:
-        """List snapshot manifests available for a full Bronze rebuild."""
-        paginator = self.client.get_paginator("list_objects_v2")
-        keys = []
-        for page in paginator.paginate(Bucket=self.bucket, Prefix="snapshots/"):
-            keys.extend(
-                item["Key"]
-                for item in page.get("Contents", [])
-                if item["Key"].endswith("/manifest.json")
-            )
-        return sorted(keys)
+        """Return known manifest references from the catalog, without listing S3."""
+        try:
+            catalog = self.get_json(SNAPSHOT_CATALOG_KEY)
+        except ClientError as error:
+            if _is_not_found_error(error):
+                return []
+            raise
+        if (
+            not isinstance(catalog, dict)
+            or catalog.get("format_version") != CATALOG_FORMAT_VERSION
+            or not isinstance(catalog.get("snapshots"), list)
+        ):
+            raise ValueError(f"Invalid snapshot catalog: {SNAPSHOT_CATALOG_KEY}")
+
+        manifest_keys = []
+        seen_snapshots: dict[str, str] = {}
+        for entry in catalog["snapshots"]:
+            if not isinstance(entry, dict):
+                raise ValueError("Snapshot catalog contains an invalid entry")
+            snapshot_id = entry.get("snapshot_id")
+            manifest_key = entry.get("manifest_key")
+            if (
+                not isinstance(snapshot_id, str)
+                or not snapshot_id
+                or not isinstance(manifest_key, str)
+                or manifest_key != manifest_key_for_snapshot(snapshot_id)
+            ):
+                raise ValueError("Snapshot catalog contains an invalid manifest reference")
+
+            previous_key = seen_snapshots.get(snapshot_id)
+            if previous_key is not None and previous_key != manifest_key:
+                raise ValueError(f"Snapshot {snapshot_id} has conflicting catalog entries")
+            seen_snapshots[snapshot_id] = manifest_key
+            if manifest_key not in manifest_keys:
+                manifest_keys.append(manifest_key)
+
+        return sorted(manifest_keys)
 
 
 def _dataset_from_key(object_key: str) -> str:
@@ -135,7 +175,6 @@ def _insert_object_to_bronze(
                 for index, record in enumerate(payload)
             ],
         )
-        # psycopg 3 reports the total number of rows affected by executemany.
         return max(cursor.rowcount, 0)
 
 
@@ -209,7 +248,6 @@ def load_snapshot_to_bronze(
             inserted_snapshot = cursor.fetchone()
 
         if inserted_snapshot is None:
-            # This exact snapshot has already committed to Bronze.
             connection.commit()
             return {
                 "snapshot_id": snapshot_id,
