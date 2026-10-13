@@ -118,6 +118,7 @@ services:
     restart: unless-stopped
 
   dbt:
+    image: elt-pipeline-dbt:local
     build:
       context: .
       dockerfile: dbt/dockerfile

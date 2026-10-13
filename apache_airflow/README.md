@@ -1,16 +1,16 @@
 # Airflow integration (local development)
 
-Airflow runs as a separate Compose project. Its worker joins the shared `elt_pipeline_network` and uses DockerOperator to launch the existing ingestion image as a separate, short-lived container.
+Airflow runs as a separate Compose project. Its worker joins the shared `elt_pipeline_network` and uses DockerOperator to launch the existing ingestion and dbt images as separate, short-lived containers.
 
 ## Start the services
 
 Run commands from the repository root. Ensure the root `.env` file contains `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_ADMIN_ACCESS_KEY`, `S3_ADMIN_SECRET_KEY`, and `POSTGRES_PASSWORD`. Keep real credentials out of Git.
 
-1. Start the ELT dependencies and build the ingestion image:
+1. Start the ELT dependencies and build both task images:
 
    ```bash
    docker compose up -d db mock_api seaweedfs
-   docker compose build ingestion
+   docker compose build ingestion dbt
    ```
 
 2. Build and start Airflow:
@@ -21,7 +21,7 @@ Run commands from the repository root. Ensure the root `.env` file contains `S3_
 
 3. Open the Airflow UI at [http://localhost:8080](http://localhost:8080). The local Compose defaults create the user `airflow` with password `airflow`; change these defaults for any shared or non-local deployment.
 
-4. In the UI, unpause `elt_pipeline` if needed and trigger it manually. Its first task, `run_ingestion`, starts `elt-pipeline-ingestion:local`, passes the runtime configuration and credentials, and waits for the container to finish.
+4. In the UI, unpause `elt_pipeline` if needed and trigger it manually. The DAG runs `run_ingestion` first, then `run_dbt_build`. Each task launches its own container; dbt executes `dbt build`, which builds the models and runs their configured tests.
 
 ### Docker socket access
 
@@ -38,7 +38,7 @@ On Docker Desktop, the default group setting may be sufficient; if the worker lo
 
 ## Test the DAG
 
-The CI smoke test starts the ELT dependencies and Airflow, then executes the real DAG with `airflow dags test elt_pipeline 2026-10-13`. This verifies that the worker can launch the separate ingestion container and that ingestion writes rows into PostgreSQL Bronze.
+The CI smoke test starts the ELT dependencies and Airflow, then executes the real DAG with `airflow dags test elt_pipeline 2026-10-13`. It verifies that the worker launches the isolated ingestion and dbt containers, that ingestion writes rows into PostgreSQL Bronze, and that dbt creates populated `mart.inventory` and `mart.supplier_reliability` tables. Since the task uses `dbt build`, dbt model tests must also pass for the DAG run to succeed.
 
 ## Stop services
 

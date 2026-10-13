@@ -53,7 +53,7 @@ POSTGRES_PASSWORD=postgre_password
 EOF
 
 docker compose config --quiet
-docker compose build ingestion
+docker compose build ingestion dbt
 docker compose up -d --wait --wait-timeout 300 db mock_api seaweedfs
 docker compose run --rm -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/bootstrap_s3.py
 
@@ -75,4 +75,13 @@ for table in orders deliveries inventory; do
   echo "bronze.$table contains $row_count rows."
 done
 
-echo "Airflow DAG ran the isolated ingestion container and all Bronze datasets contain rows."
+for table in inventory supplier_reliability; do
+  row_count="$(docker compose exec -T db psql -U postgre_user -d elt_pipeline -Atqc "SELECT COUNT(*) FROM mart.$table")"
+  if [[ ! "$row_count" =~ ^[0-9]+$ || "$row_count" -le 0 ]]; then
+    echo "Expected dbt to create mart.$table with rows; got: $row_count" >&2
+    exit 1
+  fi
+  echo "mart.$table contains $row_count rows."
+done
+
+echo "Airflow DAG ran isolated ingestion and dbt containers; Bronze and Mart contain rows."
