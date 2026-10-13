@@ -84,6 +84,17 @@ x-airflow-common:
     POSTGRES_DB: elt_pipeline
     POSTGRES_USER: postgre_user
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
+    # Airflow's environment-backed Variable backend makes these available to Jinja templates.
+    AIRFLOW_VAR_API_URL: http://mock_api:8000
+    AIRFLOW_VAR_S3_ENDPOINT: http://seaweedfs:8333
+    AIRFLOW_VAR_S3_BUCKET: elt-raw
+    AIRFLOW_VAR_S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+    AIRFLOW_VAR_S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
+    AIRFLOW_VAR_POSTGRES_HOST: db
+    AIRFLOW_VAR_POSTGRES_PORT: '5432'
+    AIRFLOW_VAR_POSTGRES_DB: elt_pipeline
+    AIRFLOW_VAR_POSTGRES_USER: postgre_user
+    AIRFLOW_VAR_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
     PYTHONPATH: /opt/airflow
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
