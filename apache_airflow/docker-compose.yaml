@@ -182,6 +182,16 @@ services:
   airflow-worker:
     <<: *airflow-common
     command: celery worker
+    # Only the worker needs Docker access to launch the isolated ingestion container.
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+      - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+      - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+      - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+      - ../ingestion:/opt/airflow/ingestion:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-0}"
     healthcheck:
       # yamllint disable rule:line-length
       test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
