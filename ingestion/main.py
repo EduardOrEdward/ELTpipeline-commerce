@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 import psycopg
+from botocore.exceptions import ClientError
 
 from ingestion.bronze import (
     ObjectStorageReader,
@@ -33,6 +34,14 @@ from ingestion.storage import (
 logger = logging.getLogger(__name__)
 
 REQUIRED_DATASETS = {"orders", "deliveries", "inventory"}
+
+
+def _is_not_found_error(error: ClientError) -> bool:
+    """Return whether an S3 error specifically means that an object is absent."""
+    response = error.response
+    code = response.get("Error", {}).get("Code")
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in {"NoSuchKey", "NotFound", "404"} or status == 404
 
 
 def run_ingestion(
@@ -62,8 +71,8 @@ def run_ingestion(
     snapshot_id = uuid4().hex
     writer = storage or ObjectStorage()
 
-    # The manifest is written last. If any data-object write fails, this call
-    # raises and the partial snapshot is never eligible for Bronze.
+    # store_raw writes data objects, registers the manifest key in the catalog,
+    # and publishes the completion manifest last.
     object_keys_by_dataset = store_raw(
         datasets,
         storage=writer,
@@ -115,14 +124,21 @@ def run_ingestion(
 def restore_bronze_from_s3(
     storage_reader: ObjectStorageReader | None = None,
 ) -> dict[str, int]:
-    """Rebuild Bronze from every completed snapshot manifest in S3, without calling the API."""
+    """Restore Bronze from cataloged completed snapshots without calling the API.
+
+    The catalog is an index, not the completion marker. If a process failed
+    after registering a snapshot but before writing its manifest, the catalog
+    entry is stale and is safely skipped.
+    """
     if not POSTGRES_PASSWORD:
         raise RuntimeError("POSTGRES_PASSWORD must be set for a Bronze restore")
 
     reader = storage_reader or ObjectStorageReader()
     manifest_keys = reader.list_manifest_keys()
     if not manifest_keys:
-        raise RuntimeError("No snapshot manifests found in S3; Bronze cannot be restored")
+        raise RuntimeError(
+            "No snapshot manifests found in the S3 catalog; Bronze cannot be restored"
+        )
 
     connection_config = {
         "host": POSTGRES_HOST,
@@ -135,12 +151,22 @@ def restore_bronze_from_s3(
     skipped = 0
 
     with psycopg.connect(**connection_config) as connection:
-        # Run DDL once rather than once per snapshot during a full rebuild.
         ensure_bronze_schema(connection)
         connection.commit()
 
         for manifest_key in manifest_keys:
-            manifest = reader.get_json(manifest_key)
+            try:
+                manifest = reader.get_json(manifest_key)
+            except ClientError as error:
+                if _is_not_found_error(error):
+                    logger.warning(
+                        "Skipping catalog entry whose manifest is not yet present: %s",
+                        manifest_key,
+                    )
+                    skipped += 1
+                    continue
+                raise
+
             if not isinstance(manifest, dict):
                 raise ValueError(f"Invalid snapshot manifest: {manifest_key}")
             if manifest.get("status") != "COMPLETED":
@@ -183,7 +209,7 @@ def main() -> None:
     parser.add_argument(
         "--restore-bronze",
         action="store_true",
-        help="rebuild Bronze from completed S3 snapshots without calling the API",
+        help="rebuild Bronze from cataloged S3 snapshots without calling the API",
     )
     args = parser.parse_args()
 
