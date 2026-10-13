@@ -4,6 +4,7 @@ Ingestion and dbt run in separate, short-lived containers so their runtime
 dependencies remain separate from Airflow's environment.
 """
 
+import os
 from datetime import datetime, timezone
 
 from airflow import DAG
@@ -29,16 +30,16 @@ with DAG(
         auto_remove="success",
         do_xcom_push=False,
         environment={
-            "API_URL": "{{ env_var('API_URL') }}",
-            "S3_ENDPOINT": "{{ env_var('S3_ENDPOINT') }}",
-            "S3_BUCKET": "{{ env_var('S3_BUCKET') }}",
-            "S3_ACCESS_KEY": "{{ env_var('S3_ACCESS_KEY') }}",
-            "S3_SECRET_KEY": "{{ env_var('S3_SECRET_KEY') }}",
-            "POSTGRES_HOST": "{{ env_var('POSTGRES_HOST') }}",
-            "POSTGRES_PORT": "{{ env_var('POSTGRES_PORT') }}",
-            "POSTGRES_DB": "{{ env_var('POSTGRES_DB') }}",
-            "POSTGRES_USER": "{{ env_var('POSTGRES_USER') }}",
-            "POSTGRES_PASSWORD": "{{ env_var('POSTGRES_PASSWORD') }}",
+            "API_URL": os.environ.get("API_URL", "http://mock_api:8000"),
+            "S3_ENDPOINT": os.environ.get("S3_ENDPOINT", "http://seaweedfs:8333"),
+            "S3_BUCKET": os.environ.get("S3_BUCKET", "elt-raw"),
+            "S3_ACCESS_KEY": os.environ.get("S3_ACCESS_KEY", ""),
+            "S3_SECRET_KEY": os.environ.get("S3_SECRET_KEY", ""),
+            "POSTGRES_HOST": os.environ.get("POSTGRES_HOST", "db"),
+            "POSTGRES_PORT": os.environ.get("POSTGRES_PORT", "5432"),
+            "POSTGRES_DB": os.environ.get("POSTGRES_DB", "elt_pipeline"),
+            "POSTGRES_USER": os.environ.get("POSTGRES_USER", "postgre_user"),
+            "POSTGRES_PASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgre_password"),
         },
     )
 
@@ -54,11 +55,11 @@ with DAG(
         do_xcom_push=False,
         environment={
             "DBT_PROFILES_DIR": "/app",
-            "POSTGRES_HOST": "{{ env_var('POSTGRES_HOST') }}",
-            "POSTGRES_PORT": "{{ env_var('POSTGRES_PORT') }}",
-            "POSTGRES_DB": "{{ env_var('POSTGRES_DB') }}",
-            "POSTGRES_USER": "{{ env_var('POSTGRES_USER') }}",
-            "POSTGRES_PASSWORD": "{{ env_var('POSTGRES_PASSWORD') }}",
+            "POSTGRES_HOST": os.environ.get("POSTGRES_HOST", "db"),
+            "POSTGRES_PORT": os.environ.get("POSTGRES_PORT", "5432"),
+            "POSTGRES_DB": os.environ.get("POSTGRES_DB", "elt_pipeline"),
+            "POSTGRES_USER": os.environ.get("POSTGRES_USER", "postgre_user"),
+            "POSTGRES_PASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgre_password"),
         },
     )
 
