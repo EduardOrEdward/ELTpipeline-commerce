@@ -77,7 +77,12 @@ class ObjectStorageReader:
 
     def list_manifest_keys(self) -> list[str]:
         """Return known manifest references from the catalog, without listing S3."""
-        catalog = self.get_json(SNAPSHOT_CATALOG_KEY)
+        try:
+            catalog = self.get_json(SNAPSHOT_CATALOG_KEY)
+        except ClientError as error:
+            if _is_not_found_error(error):
+                return []
+            raise
         if (
             not isinstance(catalog, dict)
             or catalog.get("format_version") != CATALOG_FORMAT_VERSION
