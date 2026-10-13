@@ -66,10 +66,13 @@ echo
 echo "Airflow API server started and passed its health endpoint."
 
 "${compose[@]}" exec -T airflow-worker airflow dags test elt_pipeline 2026-10-13
-orders_count="$(docker compose exec -T db psql -U postgre_user -d elt_pipeline -Atqc 'SELECT COUNT(*) FROM bronze.orders')"
-if [[ ! "$orders_count" =~ ^[0-9]+$ || "$orders_count" -le 0 ]]; then
-  echo "Expected ingestion to load rows into bronze.orders; got: $orders_count" >&2
-  exit 1
-fi
+for table in orders deliveries inventory; do
+  row_count="$(docker compose exec -T db psql -U postgre_user -d elt_pipeline -Atqc "SELECT COUNT(*) FROM bronze.$table")"
+  if [[ ! "$row_count" =~ ^[0-9]+$ || "$row_count" -le 0 ]]; then
+    echo "Expected ingestion to load rows into bronze.$table; got: $row_count" >&2
+    exit 1
+  fi
+  echo "bronze.$table contains $row_count rows."
+done
 
-echo "Airflow DAG ran the isolated ingestion container; bronze.orders has $orders_count rows."
+echo "Airflow DAG ran the isolated ingestion container and all Bronze datasets contain rows."
