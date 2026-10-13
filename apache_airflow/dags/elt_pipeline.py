@@ -4,6 +4,7 @@ Ingestion and dbt run in separate, short-lived containers so their runtime
 dependencies remain separate from Airflow's environment.
 """
 
+import os
 from datetime import datetime, timezone
 
 from airflow import DAG
@@ -54,11 +55,11 @@ with DAG(
         do_xcom_push=False,
         environment={
             "DBT_PROFILES_DIR": "/app",
-            "POSTGRES_HOST": "{{ env_var('POSTGRES_HOST') }}",
-            "POSTGRES_PORT": "{{ env_var('POSTGRES_PORT') }}",
-            "POSTGRES_DB": "{{ env_var('POSTGRES_DB') }}",
-            "POSTGRES_USER": "{{ env_var('POSTGRES_USER') }}",
-            "POSTGRES_PASSWORD": "{{ env_var('POSTGRES_PASSWORD') }}",
+            "POSTGRES_HOST": os.environ.get("POSTGRES_HOST", "db"),
+            "POSTGRES_PORT": os.environ.get("POSTGRES_PORT", "5432"),
+            "POSTGRES_DB": os.environ.get("POSTGRES_DB", "elt_pipeline"),
+            "POSTGRES_USER": os.environ.get("POSTGRES_USER", "postgre_user"),
+            "POSTGRES_PASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgre_password"),
         },
     )
 
