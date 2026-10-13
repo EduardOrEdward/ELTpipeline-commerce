@@ -120,6 +120,28 @@ def verify_immutable_object(client, object_key: str, original_payload) -> None:
 def verify_bronze() -> None:
     s3_client = create_s3_client()
 
+    # The ingestion identity intentionally has no ListBucket permission.
+    try:
+        s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix="snapshots/")
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code not in {"AccessDenied", "403"} and status != 403:
+            raise AssertionError(
+                f"Listing S3 unexpectedly failed with {code} ({status})"
+            ) from exc
+    else:
+        raise AssertionError("Ingestion credentials unexpectedly have ListBucket access")
+
+    catalog = get_s3_json(s3_client, "snapshots/catalog.json")
+    if catalog.get("format_version") != 1 or not isinstance(catalog.get("snapshots"), list):
+        raise AssertionError("Snapshot catalog has an invalid format")
+    catalog_manifest_keys = {
+        entry.get("manifest_key")
+        for entry in catalog["snapshots"]
+        if isinstance(entry, dict)
+    }
+
     with psycopg.connect(**DB_CONFIG) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -140,6 +162,8 @@ def verify_bronze() -> None:
             manifest = get_s3_json(s3_client, manifest_key)
             if manifest.get("snapshot_id") != snapshot_id:
                 raise AssertionError(f"Snapshot ID mismatch in {manifest_key}")
+            if manifest_key not in catalog_manifest_keys:
+                raise AssertionError(f"Loaded manifest is missing from the catalog: {manifest_key}")
             if manifest.get("status") != "COMPLETED":
                 raise AssertionError(f"Non-completed snapshot was loaded: {manifest_key}")
             if set(manifest.get("datasets", {})) != set(DATASETS):
@@ -228,8 +252,8 @@ def verify_bronze() -> None:
         )
 
         print(
-            f"[OK] {len(snapshots)} completed snapshot(s), immutable S3 objects, "
-            "and idempotent Bronze replay verified"
+            f"[OK] {len(snapshots)} completed snapshot(s), catalog coverage, "
+            "restricted S3 listing, immutable objects, and idempotent Bronze replay verified"
         )
 
 
