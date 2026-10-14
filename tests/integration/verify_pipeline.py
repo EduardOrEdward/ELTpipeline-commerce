@@ -35,11 +35,36 @@ DATASETS = {
 
 
 def get_json(url: str):
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
-    with urlopen(request, timeout=10) as response:
-        if response.status != 200:
-            raise AssertionError(f"Expected HTTP 200 from {url}, got {response.status}")
-        return json.load(response)
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    retries = 3
+
+    for attempt in range(retries + 1):
+        request = Request(url, headers={"Accept": "application/json"}, method="GET")
+        try:
+            with urlopen(request, timeout=10) as response:
+                if response.status != 200:
+                    raise AssertionError(
+                        f"Expected HTTP 200 from {url}, got {response.status}"
+                    )
+                return json.load(response)
+        except HTTPError as exc:
+            if exc.code not in retryable_statuses or attempt >= retries:
+                raise
+            print(
+                f"[WARN] HTTP {exc.code} from {url}; retrying "
+                f"({attempt + 1}/{retries})"
+            )
+        except URLError as exc:
+            if attempt >= retries:
+                raise
+            print(
+                f"[WARN] Request to {url} failed ({exc}); retrying "
+                f"({attempt + 1}/{retries})"
+            )
+
+        time.sleep(2**attempt)
+
+    raise RuntimeError(f"Request to {url} failed unexpectedly")
 
 
 def wait_for_api() -> None:
