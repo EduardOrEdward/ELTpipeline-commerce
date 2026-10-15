@@ -1,4 +1,4 @@
-"""Raw object storage for ingestion snapshots and their catalog.
+""""Raw object storage for ingestion snapshots and their catalog.
 
 Dataset objects and completed manifests are immutable. The mutable catalog is a
 small index that lets a restricted reader find manifests without S3 ListBucket.
@@ -24,6 +24,7 @@ from ingestion.config import (
 SNAPSHOT_CATALOG_KEY = "snapshots/catalog.json"
 CATALOG_FORMAT_VERSION = 1
 CATALOG_WRITE_ATTEMPTS = 5
+REQUIRED_DATASETS = frozenset({"orders", "deliveries", "inventory"})
 
 
 def manifest_key_for_snapshot(snapshot_id: str) -> str:
@@ -190,6 +191,7 @@ class ObjectStorage:
 
         raise RuntimeError("Could not update the snapshot catalog")
 
+
     def write_dataset(
         self,
         dataset: str,
@@ -214,6 +216,8 @@ class ObjectStorage:
         """Write the completion manifest after all dataset objects exist."""
         if set(object_keys_by_dataset) != set(datasets):
             raise ValueError("Manifest datasets do not match stored object keys")
+        if set(datasets) != REQUIRED_DATASETS:
+            raise ValueError("Manifest must contain orders, deliveries, and inventory")
 
         timestamp = timestamp or datetime.now(timezone.utc)
         timestamp = timestamp.astimezone(timezone.utc)
@@ -235,24 +239,48 @@ class ObjectStorage:
         return manifest_key
 
 
+def validate_snapshot_datasets(datasets: dict[str, Any]) -> None:
+    """Validate the required dataset package shape before writing any S3 object.
+
+    This validates package completeness and JSON record shape only. It does not
+    validate business fields, deduplicate records, or infer whether the source
+    API itself omitted records from an otherwise valid response.
+    """
+    if not isinstance(datasets, dict):
+        raise ValueError("Snapshot datasets must be a mapping")
+
+    received = set(datasets)
+    if received != REQUIRED_DATASETS:
+        missing = sorted(REQUIRED_DATASETS - received)
+        unexpected = sorted(received - REQUIRED_DATASETS)
+        details = []
+        if missing:
+            details.append(f"missing datasets: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected datasets: {', '.join(unexpected)}")
+        raise ValueError("Incomplete snapshot package (" + "; ".join(details) + ")")
+
+    for dataset, records in datasets.items():
+        if not isinstance(records, list):
+            raise ValueError(f"Dataset {dataset!r} must be a JSON array")
+        if any(not isinstance(record, dict) for record in records):
+            raise ValueError(f"Dataset {dataset!r} must contain only JSON objects")
+
+
 def store_raw(
     datasets: dict[str, Any],
     storage: ObjectStorage | None = None,
     timestamp: datetime | None = None,
     snapshot_id: str | None = None,
 ) -> dict[str, str]:
-    """Store datasets, register the manifest key, then publish completion.
+    """Validate and store a complete immutable snapshot.
 
-    If a dataset or catalog write fails, no completion manifest is written.
-    A catalog entry can temporarily point to a missing manifest if manifest
-    creation fails; restore ignores such entries and never loads partial data.
+    If validation, a dataset write, or the catalog write fails, no completion
+    manifest is published. A catalog entry can temporarily point to a missing
+    manifest if manifest creation fails; restore ignores such entries and never
+    loads partial data.
     """
-    if not datasets:
-        raise ValueError("Cannot store an empty snapshot")
-
-    for dataset, records in datasets.items():
-        if not isinstance(records, list):
-            raise ValueError(f"Dataset {dataset!r} must be a JSON array")
+    validate_snapshot_datasets(datasets)
 
     storage = storage or ObjectStorage()
     snapshot_id = snapshot_id or uuid4().hex
