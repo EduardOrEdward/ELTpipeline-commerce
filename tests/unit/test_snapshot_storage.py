@@ -3,7 +3,11 @@
 import unittest
 from datetime import datetime, timezone
 
-from ingestion.storage import manifest_key_for_snapshot, store_raw
+from ingestion.storage import (
+    REQUIRED_DATASETS,
+    manifest_key_for_snapshot,
+    store_raw,
+)
 
 
 class FakeStorage:
@@ -70,6 +74,7 @@ class StoreRawTests(unittest.TestCase):
             ["dataset", "dataset", "dataset", "catalog", "manifest"],
         )
         self.assertEqual(set(object_keys), set(self.datasets))
+        self.assertEqual(set(object_keys), REQUIRED_DATASETS)
         self.assertEqual(storage.manifest["snapshot_id"], "snapshot-test")
         self.assertEqual(storage.manifest["object_keys"], object_keys)
         self.assertEqual(
@@ -83,6 +88,46 @@ class StoreRawTests(unittest.TestCase):
                 "manifest_key": manifest_key_for_snapshot("snapshot-test"),
             }],
         )
+
+    def test_each_missing_required_dataset_is_rejected_before_any_write(self):
+        for missing_dataset in REQUIRED_DATASETS:
+            with self.subTest(missing_dataset=missing_dataset):
+                storage = FakeStorage()
+                incomplete = {
+                    name: records
+                    for name, records in self.datasets.items()
+                    if name != missing_dataset
+                }
+
+                with self.assertRaisesRegex(ValueError, "Incomplete snapshot package"):
+                    store_raw(
+                        incomplete,
+                        storage=storage,
+                        timestamp=self.timestamp,
+                        snapshot_id="snapshot-incomplete",
+                    )
+
+                self.assertEqual(storage.events, [])
+                self.assertEqual(storage.catalog, [])
+                self.assertIsNone(storage.manifest)
+
+    def test_unexpected_dataset_is_rejected_before_any_write(self):
+        storage = FakeStorage()
+        invalid = {**self.datasets, "customers": [{"customer_id": 1}]}
+
+        with self.assertRaisesRegex(ValueError, "unexpected datasets: customers"):
+            store_raw(invalid, storage=storage, snapshot_id="snapshot-unexpected")
+
+        self.assertEqual(storage.events, [])
+
+    def test_non_object_record_is_rejected_before_any_write(self):
+        storage = FakeStorage()
+        invalid = {**self.datasets, "orders": [{"order_id": 1}, None]}
+
+        with self.assertRaisesRegex(ValueError, "only JSON objects"):
+            store_raw(invalid, storage=storage, snapshot_id="snapshot-invalid-record")
+
+        self.assertEqual(storage.events, [])
 
     def test_failed_dataset_write_does_not_register_or_publish_snapshot(self):
         storage = FakeStorage(fail_dataset="deliveries")
@@ -135,7 +180,7 @@ class StoreRawTests(unittest.TestCase):
     def test_empty_snapshot_is_rejected(self):
         storage = FakeStorage()
 
-        with self.assertRaisesRegex(ValueError, "empty snapshot"):
+        with self.assertRaisesRegex(ValueError, "Incomplete snapshot package"):
             store_raw({}, storage=storage, snapshot_id="snapshot-empty")
 
         self.assertEqual(storage.events, [])
