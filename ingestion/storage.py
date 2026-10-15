@@ -1,4 +1,4 @@
-""""Raw object storage for ingestion snapshots and their catalog.
+"""Raw object storage for ingestion snapshots and their catalog.
 
 Dataset objects and completed manifests are immutable. The mutable catalog is a
 small index that lets a restricted reader find manifests without S3 ListBucket.
