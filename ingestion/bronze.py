@@ -185,6 +185,12 @@ def _validate_completed_snapshot(
     raw_objects: dict[str, Any],
 ) -> dict[str, str]:
     """Validate manifest identity, completeness, and the objects supplied for loading."""
+    if not isinstance(manifest, dict):
+        raise ValueError("Snapshot manifest must be a JSON object")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        raise ValueError("Snapshot ID must be a non-empty string")
+    if manifest.get("format_version") != 1:
+        raise ValueError("Unsupported snapshot manifest format version")
     if manifest.get("snapshot_id") != snapshot_id:
         raise ValueError("Snapshot ID does not match the S3 manifest")
     if manifest_key != manifest_key_for_snapshot(snapshot_id):
@@ -203,10 +209,31 @@ def _validate_completed_snapshot(
         object_key = details.get("object_key")
         if not isinstance(object_key, str) or _dataset_from_key(object_key) != dataset:
             raise ValueError(f"Invalid object key for dataset {dataset}")
+        key_parts = object_key.split("/")
+        if (
+            len(key_parts) != 3
+            or key_parts[0] != dataset
+            or not key_parts[1]
+            or key_parts[2] != f"{snapshot_id}.json"
+        ):
+            raise ValueError(
+                f"Raw object key does not belong to snapshot {snapshot_id}: {object_key}"
+            )
+
+        record_count = details.get("record_count")
+        if (
+            not isinstance(record_count, int)
+            or isinstance(record_count, bool)
+            or record_count < 0
+        ):
+            raise ValueError(f"Invalid record count for raw object: {object_key}")
+
         payload = raw_objects.get(object_key)
         if not isinstance(payload, list):
             raise ValueError(f"Missing or invalid raw object: {object_key}")
-        if details.get("record_count") != len(payload):
+        if any(not isinstance(record, dict) for record in payload):
+            raise ValueError(f"Raw object must contain only JSON objects: {object_key}")
+        if record_count != len(payload):
             raise ValueError(f"Record count mismatch for raw object: {object_key}")
         object_keys[dataset] = object_key
 
@@ -248,6 +275,22 @@ def load_snapshot_to_bronze(
             inserted_snapshot = cursor.fetchone()
 
         if inserted_snapshot is None:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT manifest_key
+                    FROM bronze.loaded_snapshots
+                    WHERE snapshot_id = %s
+                    """,
+                    (snapshot_id,),
+                )
+                existing_snapshot = cursor.fetchone()
+
+            if existing_snapshot is None or existing_snapshot[0] != manifest_key:
+                raise ValueError(
+                    f"Snapshot {snapshot_id} is already registered with a different manifest"
+                )
+
             connection.commit()
             return {
                 "snapshot_id": snapshot_id,
