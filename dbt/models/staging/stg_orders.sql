@@ -8,7 +8,9 @@ with source as (
         (raw_payload->>'planned_quantity')::integer as planned_quantity,
         (raw_payload->>'order_date')::date as order_date,
         (raw_payload->>'expected_delivery_date')::date as expected_delivery_date,
-        ingested_at
+        ingested_at,
+        source_object_key,
+        record_index
     from {{ source('bronze', 'orders') }}
 ),
 
@@ -26,7 +28,7 @@ deduplicated as (
       and product_id > 0
       and supplier_id > 0
       and planned_quantity > 0
-    order by order_id, ingested_at desc
+    order by order_id, ingested_at desc, source_object_key desc, record_index desc
 )
 
 select *
