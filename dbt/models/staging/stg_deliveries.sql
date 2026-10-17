@@ -6,7 +6,9 @@ with source as (
         raw_payload->>'order_id' as order_id,
         (raw_payload->>'actual_quantity')::integer as actual_quantity,
         (raw_payload->>'actual_delivery_date')::date as actual_delivery_date,
-        ingested_at
+        ingested_at,
+        source_object_key,
+        record_index
     from {{ source('bronze', 'deliveries') }}
 ),
 
@@ -21,7 +23,7 @@ deduplicated as (
     where delivery_id is not null
       and order_id is not null
       and actual_quantity >= 0
-    order by delivery_id, ingested_at desc
+    order by delivery_id, ingested_at desc, source_object_key desc, record_index desc
 )
 
 select *
