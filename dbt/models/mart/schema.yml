@@ -2,12 +2,26 @@ version: 2
 
 models:
   - name: supplier_reliability
-    description: Supplier-level fulfillment and delivery performance.
+    description: >
+      One row per supplier with order fulfillment and delivery performance.
+      Order and delivery metrics are aggregated separately to avoid join fan-out.
     columns:
       - name: supplier_id
         tests:
           - not_null
           - unique
+      - name: total_orders
+        tests:
+          - not_null
+      - name: delivered_orders
+        tests:
+          - not_null
+      - name: planned_quantity
+        tests:
+          - not_null
+      - name: delivered_quantity
+        tests:
+          - not_null
       - name: fulfillment_rate
         tests:
           - not_null
