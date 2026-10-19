@@ -1,5 +1,6 @@
 -- Gold rows must satisfy the supplier_reliability output contract.
--- A supplier without deliveries is valid; avg_delivery_delay_days may be NULL.
+-- Negative average delays are valid: they mean deliveries arrived early.
+-- fulfillment_rate may exceed 1 when actual delivered quantity exceeds the plan.
 select
     supplier_id,
     total_orders,
@@ -21,10 +22,6 @@ where supplier_id is null
    or delivered_quantity < 0
    or fulfillment_rate is null
    or fulfillment_rate < 0
-   or (
-       avg_delivery_delay_days is not null
-       and avg_delivery_delay_days < 0
-   )
    or fulfillment_rate is distinct from round(
        delivered_quantity::numeric / nullif(planned_quantity, 0),
        4
