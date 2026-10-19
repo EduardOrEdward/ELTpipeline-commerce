@@ -75,5 +75,5 @@ unit_tests:
           - {order_id: order-c, actual_quantity: 6, actual_delivery_date: '2025-02-05'}
     expect:
       rows:
-        - {supplier_id: 10, total_orders: 2, delivered_orders: 2, planned_quantity: 30, delivered_quantity: 27, fulfillment_rate: 0.9, avg_delivery_delay_days: -0.5}
-        - {supplier_id: 20, total_orders: 1, delivered_orders: 1, planned_quantity: 5, delivered_quantity: 6, fulfillment_rate: 1.2, avg_delivery_delay_days: 4.0}
+        - {supplier_id: 10, total_orders: 2, delivered_orders: 2, planned_quantity: 30, delivered_quantity: 27, fulfillment_rate: 0.9000, avg_delivery_delay_days: -0.50}
+        - {supplier_id: 20, total_orders: 1, delivered_orders: 1, planned_quantity: 5, delivered_quantity: 6, fulfillment_rate: 1.2000, avg_delivery_delay_days: 4.00}
