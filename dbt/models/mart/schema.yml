@@ -7,24 +7,40 @@ models:
       Order and delivery metrics are aggregated separately to avoid join fan-out.
     columns:
       - name: supplier_id
+        description: Supplier identifier; each supplier appears once.
         tests:
           - not_null
           - unique
       - name: total_orders
+        description: Number of orders placed with the supplier.
         tests:
           - not_null
       - name: delivered_orders
+        description: >
+          Number of orders with a delivery record and a non-null actual delivery
+          date. The current API always generates the actual delivery date.
         tests:
           - not_null
       - name: planned_quantity
+        description: Sum of quantities planned across the supplier's orders.
         tests:
           - not_null
       - name: delivered_quantity
+        description: Sum of quantities in completed deliveries.
         tests:
           - not_null
       - name: fulfillment_rate
+        description: >
+          delivered_quantity / planned_quantity, rounded to four decimal places.
+          Values above 1 are valid when the supplier delivers more than planned;
+          inventory stock is not included in this metric.
         tests:
           - not_null
+      - name: avg_delivery_delay_days
+        description: >
+          Average actual delivery date minus expected delivery date, rounded to
+          two decimal places. Negative values mean deliveries arrived early;
+          NULL means there are no completed deliveries.
 
   - name: inventory
     description: Latest known inventory snapshot for each product.
@@ -39,3 +55,25 @@ models:
       - name: is_out_of_stock
         tests:
           - not_null
+
+unit_tests:
+  - name: supplier_reliability_known_supplier_metrics
+    description: >
+      Uses controlled inputs to verify supplier-level aggregation, early
+      delivery, and fulfillment above 1 without relying on the production data.
+    model: supplier_reliability
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: order-a, supplier_id: 10, planned_quantity: 10, expected_delivery_date: '2025-01-10'}
+          - {order_id: order-b, supplier_id: 10, planned_quantity: 20, expected_delivery_date: '2025-01-10'}
+          - {order_id: order-c, supplier_id: 20, planned_quantity: 5, expected_delivery_date: '2025-02-01'}
+      - input: ref('stg_deliveries')
+        rows:
+          - {order_id: order-a, actual_quantity: 12, actual_delivery_date: '2025-01-12'}
+          - {order_id: order-b, actual_quantity: 15, actual_delivery_date: '2025-01-07'}
+          - {order_id: order-c, actual_quantity: 6, actual_delivery_date: '2025-02-05'}
+    expect:
+      rows:
+        - {supplier_id: 10, total_orders: 2, delivered_orders: 2, planned_quantity: 30, delivered_quantity: 27, fulfillment_rate: 0.9, avg_delivery_delay_days: -0.5}
+        - {supplier_id: 20, total_orders: 1, delivered_orders: 1, planned_quantity: 5, delivered_quantity: 6, fulfillment_rate: 1.2, avg_delivery_delay_days: 4.0}
