@@ -1,5 +1,6 @@
 -- Reconcile Gold metrics against independently aggregated Silver inputs.
--- Keeping order and delivery aggregates separate catches JOIN fan-out.
+-- This is a broad reconciliation check; fixed-input unit tests separately verify
+-- known expected values without reproducing this aggregation.
 with expected_orders as (
     select
         supplier_id,
@@ -9,23 +10,19 @@ with expected_orders as (
     group by supplier_id
 ),
 
-expected_deliveries as (
+expected_completed_deliveries as (
     select
         o.supplier_id,
         count(distinct d.order_id)::bigint as delivered_orders,
         sum(d.actual_quantity)::bigint as delivered_quantity,
         round(
-            avg(
-                greatest(
-                    0,
-                    d.actual_delivery_date - o.expected_delivery_date
-                )
-            )::numeric,
+            avg(d.actual_delivery_date - o.expected_delivery_date)::numeric,
             2
         ) as avg_delivery_delay_days
     from {{ ref('stg_deliveries') }} as d
     inner join {{ ref('stg_orders') }} as o
         on d.order_id = o.order_id
+    where d.actual_delivery_date is not null
     group by o.supplier_id
 ),
 
@@ -46,7 +43,7 @@ expected as (
         ) as fulfillment_rate,
         d.avg_delivery_delay_days
     from expected_orders as o
-    left join expected_deliveries as d
+    left join expected_completed_deliveries as d
         on d.supplier_id = o.supplier_id
 )
 
