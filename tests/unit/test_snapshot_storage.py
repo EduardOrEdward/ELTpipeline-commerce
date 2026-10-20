@@ -1,10 +1,15 @@
 """Unit tests for publishing complete immutable raw snapshots."""
 
+import json
 import unittest
 from datetime import datetime, timezone
+from io import BytesIO
+
+from botocore.exceptions import ClientError
 
 from ingestion.storage import (
     REQUIRED_DATASETS,
+    ObjectStorage,
     manifest_key_for_snapshot,
     store_raw,
 )
@@ -88,6 +93,70 @@ class StoreRawTests(unittest.TestCase):
                 "manifest_key": manifest_key_for_snapshot("snapshot-test"),
             }],
         )
+
+
+    def test_s3_put_error_is_propagated_instead_of_treated_as_success(self):
+        class FailingS3Client:
+            def put_object(self, **kwargs):
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "InternalError",
+                            "Message": "simulated S3 write failure",
+                        },
+                        "ResponseMetadata": {"HTTPStatusCode": 500},
+                    },
+                    "PutObject",
+                )
+
+        storage = ObjectStorage.__new__(ObjectStorage)
+        storage.bucket = "elt-raw"
+        storage.client = FailingS3Client()
+
+        with self.assertRaisesRegex(ClientError, "simulated S3 write failure"):
+            storage.put_json("orders/2026-10-12/snapshot-test.json", [{"order_id": 1}])
+
+    def test_s3_conditional_conflict_accepts_identical_existing_object(self):
+        class ExistingObjectClient:
+            def put_object(self, **kwargs):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "PreconditionFailed", "Message": "already exists"},
+                        "ResponseMetadata": {"HTTPStatusCode": 412},
+                    },
+                    "PutObject",
+                )
+
+            def get_object(self, **kwargs):
+                return {"Body": BytesIO(json.dumps([{"order_id": 1}]).encode("utf-8"))}
+
+        storage = ObjectStorage.__new__(ObjectStorage)
+        storage.bucket = "elt-raw"
+        storage.client = ExistingObjectClient()
+
+        # An earlier attempt may have stored the object before its response was lost.
+        storage.put_json("orders/2026-10-12/snapshot-test.json", [{"order_id": 1}])
+
+    def test_s3_conditional_conflict_rejects_different_existing_object(self):
+        class ExistingObjectClient:
+            def put_object(self, **kwargs):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "PreconditionFailed", "Message": "already exists"},
+                        "ResponseMetadata": {"HTTPStatusCode": 412},
+                    },
+                    "PutObject",
+                )
+
+            def get_object(self, **kwargs):
+                return {"Body": BytesIO(b'[{"order_id": 99}]')}
+
+        storage = ObjectStorage.__new__(ObjectStorage)
+        storage.bucket = "elt-raw"
+        storage.client = ExistingObjectClient()
+
+        with self.assertRaisesRegex(ValueError, "different content"):
+            storage.put_json("orders/2026-10-12/snapshot-test.json", [{"order_id": 1}])
 
     def test_each_missing_required_dataset_is_rejected_before_any_write(self):
         for missing_dataset in REQUIRED_DATASETS:
