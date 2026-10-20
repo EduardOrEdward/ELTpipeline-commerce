@@ -6,11 +6,13 @@ and its completion manifest have been persisted to immutable object storage.
 
 import argparse
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 import psycopg
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ingestion.bronze import (
     ObjectStorageReader,
@@ -34,6 +36,8 @@ from ingestion.storage import (
 logger = logging.getLogger(__name__)
 
 REQUIRED_DATASETS = {"orders", "deliveries", "inventory"}
+S3_PUBLISH_ATTEMPTS = 3
+RETRYABLE_S3_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def _is_not_found_error(error: ClientError) -> bool:
@@ -42,6 +46,21 @@ def _is_not_found_error(error: ClientError) -> bool:
     code = response.get("Error", {}).get("Code")
     status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
     return code in {"NoSuchKey", "NotFound", "404"} or status == 404
+
+
+def _is_retryable_s3_error(error: Exception) -> bool:
+    """Identify transient S3/network errors safe to retry with the same payload."""
+    if isinstance(error, ClientError):
+        response = error.response
+        status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        code = response.get("Error", {}).get("Code")
+        return status in RETRYABLE_S3_STATUS_CODES or code in {
+            "RequestTimeout",
+            "SlowDown",
+            "InternalError",
+            "ServiceUnavailable",
+        }
+    return isinstance(error, BotoCoreError)
 
 
 def extract_to_s3(
@@ -71,11 +90,33 @@ def extract_to_s3(
 
     snapshot_id = snapshot_id or uuid4().hex
     writer = storage or ObjectStorage()
-    object_keys_by_dataset = store_raw(
-        datasets,
-        storage=writer,
-        snapshot_id=snapshot_id,
-    )
+    # Keep both the snapshot ID and timestamp stable across publish retries.
+    # This lets storage safely recognize objects written before a transient
+    # failure, without refetching the API payload or mixing snapshots.
+    timestamp = datetime.now(timezone.utc)
+    for attempt in range(S3_PUBLISH_ATTEMPTS):
+        try:
+            object_keys_by_dataset = store_raw(
+                datasets,
+                storage=writer,
+                snapshot_id=snapshot_id,
+                timestamp=timestamp,
+            )
+            break
+        except Exception as error:
+            if not _is_retryable_s3_error(error) or attempt == S3_PUBLISH_ATTEMPTS - 1:
+                raise
+            delay = 2 ** attempt
+            logger.warning(
+                "Transient S3 publish failure for snapshot %s "
+                "(attempt %s/%s); retrying in %s seconds: %s",
+                snapshot_id,
+                attempt + 1,
+                S3_PUBLISH_ATTEMPTS,
+                delay,
+                error,
+            )
+            time.sleep(delay)
     manifest_key = manifest_key_for_snapshot(snapshot_id)
     logger.info(
         "Published completed S3 snapshot %s with manifest %s",
