@@ -38,7 +38,7 @@ with DAG(
     extract_to_s3 = DockerOperator(
         task_id="extract_to_s3",
         image="elt-pipeline-ingestion:local",
-        command="--extract-to-s3",
+        command="python -m ingestion.main --extract-to-s3",
         docker_url="unix://var/run/docker.sock",
         network_mode="elt_pipeline_network",
         # The Docker daemon may not share the worker's temporary directory.
@@ -53,7 +53,7 @@ with DAG(
     load_bronze = DockerOperator(
         task_id="load_bronze",
         image="elt-pipeline-ingestion:local",
-        command="--load-bronze {{ ti.xcom_pull(task_ids='extract_to_s3') }}",
+        command="python -m ingestion.main --load-bronze {{ ti.xcom_pull(task_ids='extract_to_s3') }}",
         docker_url="unix://var/run/docker.sock",
         network_mode="elt_pipeline_network",
         mount_tmp_dir=False,
