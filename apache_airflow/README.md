@@ -21,7 +21,7 @@ Run commands from the repository root. Ensure the root `.env` file contains `S3_
 
 3. Open the Airflow UI at [http://localhost:8080](http://localhost:8080). The local Compose defaults create the user `airflow` with password `airflow`; change these defaults for any shared or non-local deployment.
 
-4. In the UI, unpause `elt_pipeline` if needed and trigger it manually. The DAG runs `run_ingestion` first, then `run_dbt_build`. Each task launches its own container; dbt executes `dbt build`, which builds the models and runs their configured tests.
+4. In the UI, unpause `elt_pipeline` if needed and trigger it manually. The DAG runs `extract_to_s3`, then `load_bronze`, then `run_dbt_build`. Each task launches its own container. The first task fetches all API datasets and publishes a completed S3 snapshot; its snapshot ID is passed to the second task through XCom. If Bronze loading retries, it reads that same snapshot from S3 and does not call the API again. The final task executes `dbt build`, which builds the models and runs their configured tests.
 
 ### Docker socket access
 
@@ -38,7 +38,7 @@ On Docker Desktop, the default group setting may be sufficient; if the worker lo
 
 ## Test the DAG
 
-The CI smoke test starts the ELT dependencies and Airflow, then executes the real DAG with `airflow dags test elt_pipeline 2026-10-13`. It verifies that the worker launches the isolated ingestion and dbt containers, that ingestion writes rows into PostgreSQL Bronze, and that dbt creates populated `mart.inventory` and `mart.supplier_reliability` tables. Since the task uses `dbt build`, dbt model tests must also pass for the DAG run to succeed.
+The CI smoke test starts the ELT dependencies and Airflow, then executes the real DAG with `airflow dags test elt_pipeline 2026-10-13`. It verifies that the worker launches the isolated extraction, Bronze-loading, and dbt containers, that ingestion writes rows into PostgreSQL Bronze, and that dbt creates populated `mart.inventory` and `mart.supplier_reliability` tables. Since the task uses `dbt build`, dbt model tests must also pass for the DAG run to succeed.
 
 ## Stop services
 
