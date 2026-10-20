@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import patch
 
+from botocore.exceptions import ClientError
+
 from ingestion import main
 
 
@@ -42,6 +44,45 @@ class IngestionStageTests(unittest.TestCase):
             "snapshots/snapshot-test/manifest.json",
         )
         self.assertEqual(result["object_keys"], object_keys)
+
+    def test_transient_s3_publish_error_retries_same_snapshot_without_refetch(self):
+        datasets = {
+            "orders": [{"order_id": 1}],
+            "deliveries": [{"delivery_id": 1}],
+            "inventory": [{"product_id": 1}],
+        }
+        object_keys = {
+            "orders": "orders/2026-10-20/snapshot-test.json",
+            "deliveries": "deliveries/2026-10-20/snapshot-test.json",
+            "inventory": "inventory/2026-10-20/snapshot-test.json",
+        }
+        transient_error = ClientError(
+            {
+                "Error": {"Code": "InternalError", "Message": "temporary S3 error"},
+                "ResponseMetadata": {"HTTPStatusCode": 500},
+            },
+            "PutObject",
+        )
+
+        with (
+            patch.object(main, "fetch_all", return_value=datasets) as fetch,
+            patch.object(
+                main,
+                "store_raw",
+                side_effect=[transient_error, object_keys],
+            ) as store,
+            patch.object(main.time, "sleep") as sleep,
+        ):
+            result = main.extract_to_s3(snapshot_id="snapshot-test")
+
+        self.assertEqual(result["snapshot_id"], "snapshot-test")
+        self.assertEqual(store.call_count, 2)
+        first_call, second_call = store.call_args_list
+        self.assertEqual(first_call.kwargs["snapshot_id"], "snapshot-test")
+        self.assertEqual(second_call.kwargs["snapshot_id"], "snapshot-test")
+        self.assertEqual(first_call.kwargs["timestamp"], second_call.kwargs["timestamp"])
+        fetch.assert_called_once_with(client=None, limit=100, snapshot_date=None)
+        sleep.assert_called_once_with(1)
 
     def test_load_bronze_reads_existing_snapshot_without_fetching_api(self):
         snapshot_id = "snapshot-test"
