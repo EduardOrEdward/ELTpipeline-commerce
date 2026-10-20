@@ -85,13 +85,30 @@ class ObjectStorage:
             separators=(",", ":"),
         ).encode("utf-8")
 
-        self.client.put_object(
-            Bucket=self.bucket,
-            Key=object_key.lstrip("/"),
-            Body=payload,
-            ContentType="application/json",
-            IfNoneMatch="*",
-        )
+        key = object_key.lstrip("/")
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=payload,
+                ContentType="application/json",
+                IfNoneMatch="*",
+            )
+        except ClientError as error:
+            if not _is_conditional_conflict(error):
+                raise
+
+            # A previous attempt may have successfully written the object but
+            # lost the response. Treat an identical immutable object as success;
+            # never overwrite or silently accept different content.
+            try:
+                existing = self.get_json(key)
+            except ClientError:
+                raise error
+            if existing != data:
+                raise ValueError(
+                    f"Immutable S3 object already exists with different content: {key}"
+                ) from error
 
     def get_json(self, object_key: str) -> Any:
         """Download and decode one JSON object."""
