@@ -3,8 +3,11 @@
 import unittest
 from datetime import datetime, timezone
 
+from botocore.exceptions import ClientError
+
 from ingestion.storage import (
     REQUIRED_DATASETS,
+    ObjectStorage,
     manifest_key_for_snapshot,
     store_raw,
 )
@@ -88,6 +91,28 @@ class StoreRawTests(unittest.TestCase):
                 "manifest_key": manifest_key_for_snapshot("snapshot-test"),
             }],
         )
+
+
+    def test_s3_put_error_is_propagated_instead_of_treated_as_success(self):
+        class FailingS3Client:
+            def put_object(self, **kwargs):
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "InternalError",
+                            "Message": "simulated S3 write failure",
+                        },
+                        "ResponseMetadata": {"HTTPStatusCode": 500},
+                    },
+                    "PutObject",
+                )
+
+        storage = ObjectStorage.__new__(ObjectStorage)
+        storage.bucket = "elt-raw"
+        storage.client = FailingS3Client()
+
+        with self.assertRaisesRegex(ClientError, "simulated S3 write failure"):
+            storage.put_json("orders/2026-10-12/snapshot-test.json", [{"order_id": 1}])
 
     def test_each_missing_required_dataset_is_rejected_before_any_write(self):
         for missing_dataset in REQUIRED_DATASETS:
