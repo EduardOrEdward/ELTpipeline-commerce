@@ -71,7 +71,10 @@ class ObjectStorage:
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name="us-east-1",
-            config=Config(signature_version="s3v4"),
+            config=Config(
+                signature_version="s3v4",
+                retries={"max_attempts": 4, "mode": "standard"},
+            ),
         )
 
     def put_json(self, object_key: str, data: Any) -> None:
