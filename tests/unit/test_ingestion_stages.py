@@ -1,7 +1,7 @@
 """Unit tests for the split API-to-S3 and S3-to-Bronze stages."""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from botocore.exceptions import ClientError
 
@@ -37,6 +37,7 @@ class IngestionStageTests(unittest.TestCase):
             datasets,
             storage=fake_storage,
             snapshot_id="snapshot-test",
+            timestamp=ANY,
         )
         self.assertEqual(result["snapshot_id"], "snapshot-test")
         self.assertEqual(
@@ -73,7 +74,7 @@ class IngestionStageTests(unittest.TestCase):
             ) as store,
             patch.object(main.time, "sleep") as sleep,
         ):
-            result = main.extract_to_s3(snapshot_id="snapshot-test")
+            result = main.extract_to_s3(storage=object(), snapshot_id="snapshot-test")
 
         self.assertEqual(result["snapshot_id"], "snapshot-test")
         self.assertEqual(store.call_count, 2)
