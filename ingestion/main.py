@@ -1,6 +1,6 @@
-"""Entry point for one complete ingestion run.
+"""Entry points for the API-to-S3 and S3-to-Bronze ingestion stages.
 
-A snapshot becomes eligible for Bronze only after every required dataset object
+A snapshot becomes eligible for Bronze only after all required dataset objects
 and its completion manifest have been persisted to immutable object storage.
 """
 
@@ -44,18 +44,19 @@ def _is_not_found_error(error: ClientError) -> bool:
     return code in {"NoSuchKey", "NotFound", "404"} or status == 404
 
 
-def run_ingestion(
+def extract_to_s3(
     client: Any | None = None,
     storage: ObjectStorage | None = None,
-    storage_reader: ObjectStorageReader | None = None,
     limit: int = 100,
     snapshot_date: str | None = None,
+    snapshot_id: str | None = None,
 ) -> dict[str, Any]:
-    """Extract, persist an immutable snapshot, then load it into Bronze."""
-    if not POSTGRES_PASSWORD:
-        raise RuntimeError("POSTGRES_PASSWORD must be set for an ingestion run")
+    """Fetch a complete API package and publish it as one completed S3 snapshot.
 
-    logger.info("Starting ingestion run")
+    This stage has no PostgreSQL dependency. The returned snapshot ID is the
+    hand-off to the S3-to-Bronze task, which can retry without calling the API.
+    """
+    logger.info("Starting API-to-S3 extraction")
     datasets = fetch_all(
         client=client,
         limit=limit,
@@ -68,27 +69,54 @@ def run_ingestion(
         )
     logger.info("Fetched all required datasets: %s", ", ".join(sorted(datasets)))
 
-    snapshot_id = uuid4().hex
+    snapshot_id = snapshot_id or uuid4().hex
     writer = storage or ObjectStorage()
-
-    # store_raw writes data objects, registers the manifest key in the catalog,
-    # and publishes the completion manifest last.
     object_keys_by_dataset = store_raw(
         datasets,
         storage=writer,
         snapshot_id=snapshot_id,
     )
     manifest_key = manifest_key_for_snapshot(snapshot_id)
-    logger.info("Stored raw snapshot %s and its completion manifest", snapshot_id)
-
-    # Read back exactly what was persisted; Bronze must reflect S3, not an
-    # in-memory API response that could differ from the stored source.
-    reader = storage_reader or ObjectStorageReader()
-    manifest = reader.get_json(manifest_key)
-    raw_objects = {
-        details["object_key"]: reader.get_json(details["object_key"])
-        for details in manifest.get("datasets", {}).values()
+    logger.info(
+        "Published completed S3 snapshot %s with manifest %s",
+        snapshot_id,
+        manifest_key,
+    )
+    return {
+        "snapshot_id": snapshot_id,
+        "manifest_key": manifest_key,
+        "object_keys": object_keys_by_dataset,
     }
+
+
+def load_bronze_from_s3(
+    snapshot_id: str,
+    storage_reader: ObjectStorageReader | None = None,
+) -> dict[str, Any]:
+    """Load one completed S3 snapshot into Bronze without calling the source API."""
+    if not POSTGRES_PASSWORD:
+        raise RuntimeError("POSTGRES_PASSWORD must be set for a Bronze load")
+    if not snapshot_id:
+        raise ValueError("snapshot_id must be a non-empty string")
+
+    reader = storage_reader or ObjectStorageReader()
+    manifest_key = manifest_key_for_snapshot(snapshot_id)
+    manifest = reader.get_json(manifest_key)
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Invalid snapshot manifest: {manifest_key}")
+
+    datasets = manifest.get("datasets")
+    if not isinstance(datasets, dict) or set(datasets) != REQUIRED_DATASETS:
+        raise ValueError(
+            "Snapshot manifest must contain orders, deliveries, and inventory"
+        )
+
+    raw_objects = {}
+    for dataset, details in datasets.items():
+        if not isinstance(details, dict) or not isinstance(details.get("object_key"), str):
+            raise ValueError(f"Invalid dataset entry in manifest: {manifest_key}")
+        object_key = details["object_key"]
+        raw_objects[object_key] = reader.get_json(object_key)
 
     connection_config = {
         "host": POSTGRES_HOST,
@@ -97,7 +125,6 @@ def run_ingestion(
         "user": POSTGRES_USER,
         "password": POSTGRES_PASSWORD,
     }
-
     with psycopg.connect(**connection_config) as connection:
         bronze_result = load_snapshot_to_bronze(
             connection,
@@ -115,10 +142,40 @@ def run_ingestion(
     return {
         "snapshot_id": snapshot_id,
         "manifest_key": manifest_key,
-        "object_keys": object_keys_by_dataset,
+        "object_keys": {
+            dataset: details["object_key"]
+            for dataset, details in datasets.items()
+        },
         "bronze_rows": bronze_result["bronze_rows"],
         "already_loaded": bronze_result["already_loaded"],
     }
+
+
+def run_ingestion(
+    client: Any | None = None,
+    storage: ObjectStorage | None = None,
+    storage_reader: ObjectStorageReader | None = None,
+    limit: int = 100,
+    snapshot_date: str | None = None,
+) -> dict[str, Any]:
+    """Run both ingestion stages for local use and backward compatibility."""
+    if not POSTGRES_PASSWORD:
+        raise RuntimeError("POSTGRES_PASSWORD must be set for an ingestion run")
+
+    snapshot = extract_to_s3(
+        client=client,
+        storage=storage,
+        limit=limit,
+        snapshot_date=snapshot_date,
+    )
+    bronze_result = load_bronze_from_s3(
+        snapshot["snapshot_id"],
+        storage_reader=storage_reader,
+    )
+    return {**snapshot, **{
+        "bronze_rows": bronze_result["bronze_rows"],
+        "already_loaded": bronze_result["already_loaded"],
+    }}
 
 
 def restore_bronze_from_s3(
@@ -204,9 +261,20 @@ def restore_bronze_from_s3(
 
 
 def main() -> None:
-    """Run ingestion, or rebuild Bronze from S3 when explicitly requested."""
-    parser = argparse.ArgumentParser(description="ELT ingestion and Bronze recovery")
-    parser.add_argument(
+    """Run the full pipeline or one explicitly selected ingestion stage."""
+    parser = argparse.ArgumentParser(description="ELT ingestion stages and Bronze recovery")
+    stages = parser.add_mutually_exclusive_group()
+    stages.add_argument(
+        "--extract-to-s3",
+        action="store_true",
+        help="fetch all source datasets and publish one completed S3 snapshot",
+    )
+    stages.add_argument(
+        "--load-bronze",
+        metavar="SNAPSHOT_ID",
+        help="load an existing completed S3 snapshot into Bronze without calling the API",
+    )
+    stages.add_argument(
         "--restore-bronze",
         action="store_true",
         help="rebuild Bronze from cataloged S3 snapshots without calling the API",
@@ -217,7 +285,13 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    if args.restore_bronze:
+    if args.extract_to_s3:
+        result = extract_to_s3()
+        # DockerOperator uses the final stdout line as XCom for the next task.
+        print(result["snapshot_id"])
+    elif args.load_bronze:
+        load_bronze_from_s3(args.load_bronze)
+    elif args.restore_bronze:
         restore_bronze_from_s3()
     else:
         run_ingestion()
