@@ -69,6 +69,15 @@ jobs:
       - name: Build and start Airflow API server
         run: bash .github/scripts/test-airflow-startup.sh
 
+      - name: Upload Airflow and service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: airflow-smoke-logs
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
+
   integration:
     name: Integration test
     runs-on: ubuntu-latest
@@ -223,6 +232,13 @@ jobs:
           docker inspect seaweedfs --format '{{json .State.Health}}' || true
           docker compose logs
 
+      - name: Collect integration service logs
+        if: always()
+        run: |
+          mkdir -p logs/ci
+          docker compose ps > logs/ci/integration-services-status.txt 2>&1 || true
+          docker compose logs --no-color > logs/ci/integration-services.log 2>&1 || true
+
       - name: Stop integration environment
         if: always()
         env:
@@ -231,3 +247,12 @@ jobs:
           S3_ADMIN_ACCESS_KEY: ci-admin
           S3_ADMIN_SECRET_KEY: ci-admin-secret
         run: docker compose down -v
+
+      - name: Upload integration service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-service-logs
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14

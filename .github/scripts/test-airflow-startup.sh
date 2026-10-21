@@ -28,6 +28,14 @@ export ENV_FILE_PATH="../.env.airflow-ci"
 
 cleanup() {
   status=$?
+  # Airflow containers may create host-mounted log directories as UID 50000.
+  # Restore runner ownership before collecting/uploading artifacts.
+  sudo chown -R "$(id -u):$(id -g)" "$repo_root/logs" 2>/dev/null || true
+  mkdir -p "$repo_root/logs/ci"
+  "${compose[@]}" ps > "$repo_root/logs/ci/airflow-services-status.txt" 2>&1 || true
+  "${compose[@]}" logs --no-color > "$repo_root/logs/ci/airflow-services.log" 2>&1 || true
+  docker compose ps > "$repo_root/logs/ci/elt-services-status.txt" 2>&1 || true
+  docker compose logs --no-color > "$repo_root/logs/ci/elt-services.log" 2>&1 || true
   if [[ "$status" -ne 0 ]]; then
     "${compose[@]}" ps || true
     "${compose[@]}" logs --no-color || true
@@ -66,6 +74,7 @@ echo
 echo "Airflow API server started and passed its health endpoint."
 
 "${compose[@]}" exec -T airflow-worker airflow dags test elt_pipeline 2026-10-13
+docker compose run --rm -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/verify_airflow_logs.py
 for table in orders deliveries inventory; do
   row_count="$(docker compose exec -T db psql -U postgre_user -d elt_pipeline -Atqc "SELECT COUNT(*) FROM bronze.$table")"
   if [[ ! "$row_count" =~ ^[0-9]+$ || "$row_count" -le 0 ]]; then
