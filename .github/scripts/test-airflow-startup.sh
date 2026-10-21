@@ -28,6 +28,9 @@ export ENV_FILE_PATH="../.env.airflow-ci"
 
 cleanup() {
   status=$?
+  # Airflow containers may create host-mounted log directories as UID 50000.
+  # Restore runner ownership before collecting/uploading artifacts.
+  sudo chown -R "$(id -u):$(id -g)" "$repo_root/logs" 2>/dev/null || true
   mkdir -p "$repo_root/logs/ci"
   "${compose[@]}" ps > "$repo_root/logs/ci/airflow-services-status.txt" 2>&1 || true
   "${compose[@]}" logs --no-color > "$repo_root/logs/ci/airflow-services.log" 2>&1 || true
