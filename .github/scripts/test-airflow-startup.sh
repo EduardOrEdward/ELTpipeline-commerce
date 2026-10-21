@@ -71,6 +71,7 @@ echo
 echo "Airflow API server started and passed its health endpoint."
 
 "${compose[@]}" exec -T airflow-worker airflow dags test elt_pipeline 2026-10-13
+docker compose run --rm -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/verify_airflow_logs.py
 for table in orders deliveries inventory; do
   row_count="$(docker compose exec -T db psql -U postgre_user -d elt_pipeline -Atqc "SELECT COUNT(*) FROM bronze.$table")"
   if [[ ! "$row_count" =~ ^[0-9]+$ || "$row_count" -le 0 ]]; then
