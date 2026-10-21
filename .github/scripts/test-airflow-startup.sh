@@ -28,6 +28,11 @@ export ENV_FILE_PATH="../.env.airflow-ci"
 
 cleanup() {
   status=$?
+  mkdir -p "$repo_root/logs/ci"
+  "${compose[@]}" ps > "$repo_root/logs/ci/airflow-services-status.txt" 2>&1 || true
+  "${compose[@]}" logs --no-color > "$repo_root/logs/ci/airflow-services.log" 2>&1 || true
+  docker compose ps > "$repo_root/logs/ci/elt-services-status.txt" 2>&1 || true
+  docker compose logs --no-color > "$repo_root/logs/ci/elt-services.log" 2>&1 || true
   if [[ "$status" -ne 0 ]]; then
     "${compose[@]}" ps || true
     "${compose[@]}" logs --no-color || true
