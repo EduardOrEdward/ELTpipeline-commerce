@@ -14,7 +14,9 @@ from pathlib import Path
 import boto3
 from airflow import DAG
 from airflow.configuration import conf
+from airflow.models.taskinstance import TaskInstance
 from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.utils.session import create_session
 
 
 
@@ -34,10 +36,19 @@ def publish_run_logs(context: dict) -> None:
     def isoformat(value):
         return value.isoformat() if value is not None else None
 
-    task_instances = sorted(
-        dag_run.get_task_instances(),
-        key=lambda task_instance: task_instance.task_id,
-    )
+    # Airflow 3 exposes dag_run in callback context as an SDK/Pydantic
+    # object, not the ORM object with get_task_instances(). Query the ORM
+    # task-instance records by DAG/run identity instead.
+    with create_session() as session:
+        task_instances = sorted(
+            session.query(TaskInstance)
+            .filter(
+                TaskInstance.dag_id == dag_id,
+                TaskInstance.run_id == run_id,
+            )
+            .all(),
+            key=lambda task_instance: task_instance.task_id,
+        )
     report = {
         "dag_id": dag_id,
         "run_id": run_id,
