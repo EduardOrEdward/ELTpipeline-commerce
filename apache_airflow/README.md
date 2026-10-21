@@ -21,6 +21,12 @@ Run commands from the repository root. Ensure the root `.env` file contains `S3_
 
 3. Open the Airflow UI at [http://localhost:8080](http://localhost:8080). The local Compose defaults create the user `airflow` with password `airflow`; change these defaults for any shared or non-local deployment.
 
+## Logs
+
+Airflow task logs are available centrally in the Airflow UI under each DAG run and task instance. The Compose setup persists the task log files on the host in `logs/airflow/` (relative to the repository root), so they remain available after Airflow containers are restarted. Runtime logs are ignored by Git through the root `.gitignore`.
+
+The Airflow CI smoke test captures Airflow and ELT service logs and uploads them as the `airflow-smoke-logs` workflow artifact. The integration job similarly uploads `integration-service-logs`. Artifacts are retained for 14 days and are available from the corresponding GitHub Actions run, including when a job fails. The files include service status snapshots and Docker Compose output; they do not change task retry or failure behavior.
+
 4. In the UI, unpause `elt_pipeline` if needed and trigger it manually. The DAG runs `extract_to_s3`, then `load_bronze`, then `run_dbt_build`. Each task launches its own container. The first task fetches all API datasets and publishes a completed S3 snapshot; its snapshot ID is passed to the second task through XCom. If Bronze loading retries, it reads that same snapshot from S3 and does not call the API again. The final task executes `dbt build`, which builds the models and runs their configured tests.
 
 ### Docker socket access
