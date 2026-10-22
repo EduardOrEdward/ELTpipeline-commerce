@@ -40,21 +40,20 @@ def verify_s3_snapshot(snapshot_id: str) -> dict[str, Any]:
     if "/" in snapshot_id or snapshot_id in {".", ".."}:
         raise ValueError("snapshot_id must be a single identifier, not an S3 path")
 
-    endpoint = os.environ["S3_ENDPOINT"]
-    bucket = os.environ["S3_BUCKET"]
     s3 = boto3.client(
         "s3",
-        endpoint_url=endpoint.rstrip("/"),
+        endpoint_url=os.environ["S3_ENDPOINT"].rstrip("/"),
         aws_access_key_id=os.environ["S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["S3_SECRET_KEY"],
         region_name="us-east-1",
     )
-
+    bucket = os.environ["S3_BUCKET"]
     manifest_key = f"snapshots/{snapshot_id}/manifest.json"
     manifest = _read_json_object(s3, bucket, manifest_key)
+
     if not isinstance(manifest, dict):
         raise ValueError(f"Snapshot manifest must be a JSON object: {manifest_key}")
-    if manifest.get("format_version") != 1:
+    if manifest.get("format_version") != 1 or isinstance(manifest.get("format_version"), bool):
         raise ValueError(f"Unsupported manifest format_version in {manifest_key}")
     if manifest.get("snapshot_id") != snapshot_id:
         raise ValueError(
@@ -131,6 +130,6 @@ with DAG(
         task_id="verify_s3_snapshot",
         python_callable=verify_s3_snapshot,
         op_kwargs={
-            "snapshot_id": "{{ dag_run.conf.get('snapshot_id', '') }}",
+            "snapshot_id": "{{ (dag_run.conf or {}).get('snapshot_id', '') }}",
         },
     )
