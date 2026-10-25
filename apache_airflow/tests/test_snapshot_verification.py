@@ -3,6 +3,7 @@
 import json
 import os
 import unittest
+from botocore.exceptions import ClientError
 from io import BytesIO
 from unittest.mock import patch
 
@@ -17,7 +18,10 @@ class FakeS3:
     def get_object(self, Bucket, Key):
         self.requested_keys.append((Bucket, Key))
         if Key not in self.objects:
-            raise AssertionError(f"Unexpected S3 key requested: {Key}")
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "Object not found"}},
+                "GetObject",
+            )
         payload = json.dumps(self.objects[Key]).encode("utf-8")
         return {"Body": BytesIO(payload)}
 
@@ -107,6 +111,14 @@ class VerifyS3SnapshotTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "must not be empty"):
             verify_s3_snapshot(self.snapshot_id)
+
+    def test_fails_when_a_referenced_s3_object_is_missing(self):
+        del self.objects["inventory/2026-10-22/snapshot-test.json"]
+
+        with self.assertRaises(ClientError) as error:
+            verify_s3_snapshot(self.snapshot_id)
+
+        self.assertEqual(error.exception.response["Error"]["Code"], "NoSuchKey")
 
     def test_requires_snapshot_id(self):
         with self.assertRaisesRegex(ValueError, "snapshot_id"):
