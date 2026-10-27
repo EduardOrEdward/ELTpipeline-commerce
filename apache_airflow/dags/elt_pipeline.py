@@ -1,7 +1,9 @@
 """Airflow orchestration for the existing ELT pipeline.
 
 API extraction/publication and Bronze loading run as separate, short-lived
-containers so a Bronze retry can reuse the same completed S3 snapshot.
+containers so a Bronze retry can reuse the same completed S3 snapshot. Once
+all operational stages and dbt tests succeed, the verification DAG is triggered
+for the exact snapshot produced by this run.
 """
 
 import json
@@ -16,9 +18,9 @@ from airflow import DAG
 from airflow.configuration import conf
 from airflow.models.taskinstance import TaskInstance
 from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.utils.session import create_session
-
-
 
 
 def publish_run_logs(context: dict) -> None:
@@ -96,6 +98,11 @@ def publish_run_logs(context: dict) -> None:
         s3.upload_file(str(archive_path), bucket, f"{run_prefix}/task-logs.zip")
 
 
+def capture_pipeline_completion() -> str:
+    """Capture the operational pipeline completion baseline after dbt succeeds."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 INGESTION_ENVIRONMENT = {
     "API_URL": "{{ var.value.API_URL }}",
     "S3_ENDPOINT": "{{ var.value.S3_ENDPOINT }}",
@@ -113,7 +120,7 @@ INGESTION_ENVIRONMENT = {
 
 with DAG(
     dag_id="elt_pipeline",
-    description="Extract to S3, load Bronze, then build and test dbt models",
+    description="Extract to S3, load Bronze, build/test dbt models, then trigger verification",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     schedule=None,
     catchup=False,
@@ -171,4 +178,23 @@ with DAG(
         },
     )
 
-    extract_to_s3 >> load_bronze >> run_dbt_build
+    capture_completion = PythonOperator(
+        task_id="capture_pipeline_completion",
+        python_callable=capture_pipeline_completion,
+    )
+
+    trigger_verification = TriggerDagRunOperator(
+        task_id="trigger_verification",
+        trigger_dag_id="elt_pipeline_verification",
+        trigger_run_id="verify__{{ run_id }}",
+        conf={
+            "snapshot_id": "{{ ti.xcom_pull(task_ids='extract_to_s3') }}",
+            "pipeline_completed_at": "{{ ti.xcom_pull(task_ids='capture_pipeline_completion') }}",
+            "source_dag_id": "{{ dag.dag_id }}",
+            "source_run_id": "{{ run_id }}",
+        },
+        wait_for_completion=False,
+        reset_dag_run=False,
+    )
+
+    extract_to_s3 >> load_bronze >> run_dbt_build >> capture_completion >> trigger_verification
