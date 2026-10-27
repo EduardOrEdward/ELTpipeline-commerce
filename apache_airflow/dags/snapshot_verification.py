@@ -270,7 +270,7 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
         if product_id <= 0 or quantity < 0 or not snapshot_date or snapshot_date == "None":
             continue
         previous = expected_inventory.get(product_id)
-        if previous is None or (snapshot_date, index) > (previous[2], previous[2]):
+        if previous is None or (snapshot_date, index) > (previous[1], previous[2]):
             expected_inventory[product_id] = (quantity, snapshot_date, index)
 
     expected_suppliers = set()
@@ -335,6 +335,31 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
             "supplier_coverage_matches_snapshot": True,
         },
     }
+
+
+def _verify_bronze_task(ti) -> dict[str, Any]:
+    """Pull the S3 verification result without stringifying its XCom value."""
+    return verify_bronze_snapshot(ti.xcom_pull(task_ids="verify_s3_snapshot"))
+
+
+def _verify_mart_task(ti) -> dict[str, Any]:
+    """Pull the S3 verification result without stringifying its XCom value."""
+    return verify_mart_tables(ti.xcom_pull(task_ids="verify_s3_snapshot"))
+
+
+def _verify_metabase_task(
+    ti,
+    metabase_url: str,
+    admin_email: str,
+    admin_password: str,
+) -> dict[str, Any]:
+    """Pull the S3 verification result and check Metabase with configured credentials."""
+    return verify_metabase_readiness(
+        ti.xcom_pull(task_ids="verify_s3_snapshot"),
+        metabase_url,
+        admin_email,
+        admin_password,
+    )
 
 
 def _metabase_request(
@@ -440,6 +465,7 @@ with DAG(
     schedule=None,
     catchup=False,
     max_active_runs=1,
+    is_paused_upon_creation=False,
     tags=["elt", "verification", "s3", "bronze", "metabase"],
 ) as dag:
     verify_snapshot = PythonOperator(
@@ -453,25 +479,18 @@ with DAG(
 
     verify_bronze = PythonOperator(
         task_id="verify_bronze_snapshot",
-        python_callable=verify_bronze_snapshot,
-        op_kwargs={
-            "snapshot_result": "{{ ti.xcom_pull(task_ids='verify_s3_snapshot') }}",
-        },
+        python_callable=_verify_bronze_task,
     )
 
     verify_mart = PythonOperator(
         task_id="verify_mart_tables",
-        python_callable=verify_mart_tables,
-        op_kwargs={
-            "snapshot_result": "{{ ti.xcom_pull(task_ids='verify_s3_snapshot') }}",
-        },
+        python_callable=_verify_mart_task,
     )
 
     verify_metabase = PythonOperator(
         task_id="verify_metabase_readiness",
-        python_callable=verify_metabase_readiness,
+        python_callable=_verify_metabase_task,
         op_kwargs={
-            "snapshot_result": "{{ ti.xcom_pull(task_ids='verify_s3_snapshot') }}",
             "metabase_url": "{{ var.value.METABASE_URL }}",
             "admin_email": "{{ var.value.METABASE_ADMIN_EMAIL }}",
             "admin_password": "{{ var.value.METABASE_ADMIN_PASSWORD }}",
