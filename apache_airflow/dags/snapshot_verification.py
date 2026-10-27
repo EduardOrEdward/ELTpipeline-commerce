@@ -1,20 +1,31 @@
-"""Verify the integrity of one already-published S3 snapshot.
+"""Verify that one successful ELT run is consistent from S3 through Metabase.
 
-This DAG does not call the source API or inspect business fields. Trigger it
-with {"snapshot_id": "<id returned by elt_pipeline.extract_to_s3>"}.
+This DAG is triggered by elt_pipeline only after extraction, Bronze loading, and
+`dbt build` have succeeded. It never calls the source API or retries the
+operational pipeline; failures here are verification failures with their own
+Airflow task logs.
 """
 
 import json
 import os
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
 import boto3
+import psycopg
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 
 REQUIRED_DATASETS = frozenset({"orders", "deliveries", "inventory"})
+BRONZE_TABLES = {
+    "orders": "bronze.orders",
+    "deliveries": "bronze.deliveries",
+    "inventory": "bronze.inventory",
+}
+MART_TABLES = ("inventory", "supplier_reliability")
 
 
 def _read_json_object(s3: Any, bucket: str, object_key: str) -> Any:
@@ -24,29 +35,52 @@ def _read_json_object(s3: Any, bucket: str, object_key: str) -> Any:
     try:
         return json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"S3 object is not valid UTF-8 JSON: s3://{bucket}/{object_key}") from error
+        raise ValueError(
+            f"S3 object is not valid UTF-8 JSON: s3://{bucket}/{object_key}"
+        ) from error
 
 
-def verify_s3_snapshot(snapshot_id: str) -> dict[str, Any]:
-    """Validate a completed snapshot's manifest and stored record counts.
-
-    The check only reads JSON structure and array lengths; it deliberately does
-    not inspect individual records or call the source API.
-    """
-    if not isinstance(snapshot_id, str) or not snapshot_id.strip():
-        raise ValueError("A non-empty snapshot_id must be supplied in dag_run.conf")
-
-    snapshot_id = snapshot_id.strip()
-    if "/" in snapshot_id or snapshot_id in {".", ".."}:
-        raise ValueError("snapshot_id must be a single identifier, not an S3 path")
-
-    s3 = boto3.client(
+def _s3_client():
+    return boto3.client(
         "s3",
         endpoint_url=os.environ["S3_ENDPOINT"].rstrip("/"),
         aws_access_key_id=os.environ["S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["S3_SECRET_KEY"],
         region_name="us-east-1",
     )
+
+
+def _pipeline_timestamp(value: str | None) -> str:
+    """Require the completion timestamp captured after dag1's dbt build."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("pipeline_completed_at must be supplied by elt_pipeline")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("pipeline_completed_at must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError("pipeline_completed_at must include a timezone")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def verify_s3_snapshot(
+    snapshot_id: str,
+    pipeline_completed_at: str | None = None,
+) -> dict[str, Any]:
+    """Validate manifest identity, required datasets, object presence and counts.
+
+    This check intentionally validates snapshot structure and record counts
+    without inspecting business fields or calling the source API.
+    """
+    if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+        raise ValueError("A non-empty snapshot_id must be supplied by elt_pipeline")
+
+    snapshot_id = snapshot_id.strip()
+    if "/" in snapshot_id or snapshot_id in {".", ".."}:
+        raise ValueError("snapshot_id must be a single identifier, not an S3 path")
+    completed_at = _pipeline_timestamp(pipeline_completed_at)
+
+    s3 = _s3_client()
     bucket = os.environ["S3_BUCKET"]
     manifest_key = f"snapshots/{snapshot_id}/manifest.json"
     manifest = _read_json_object(s3, bucket, manifest_key)
@@ -79,9 +113,16 @@ def verify_s3_snapshot(snapshot_id: str) -> dict[str, Any]:
         if not isinstance(object_key, str) or not object_key.strip():
             raise ValueError(f"Manifest has no valid object_key for {dataset!r}")
         object_key = object_key.strip()
-        if object_key.split("/", 1)[0] != dataset:
+        key_parts = object_key.split("/")
+        if (
+            len(key_parts) != 3
+            or key_parts[0] != dataset
+            or not key_parts[1]
+            or key_parts[2] != f"{snapshot_id}.json"
+        ):
             raise ValueError(
-                f"Manifest object for {dataset!r} points outside its dataset prefix: {object_key}"
+                f"Manifest object for {dataset!r} does not belong to snapshot "
+                f"{snapshot_id}: {object_key}"
             )
         if object_key in seen_object_keys:
             raise ValueError(f"Manifest reuses the same S3 object more than once: {object_key}")
@@ -103,6 +144,8 @@ def verify_s3_snapshot(snapshot_id: str) -> dict[str, Any]:
                 f"Record count mismatch for {dataset!r}: "
                 f"manifest={record_count}, object={len(records)} ({object_key})"
             )
+        if any(not isinstance(record, dict) for record in records):
+            raise ValueError(f"Dataset object must contain JSON objects: {object_key}")
 
         verified_datasets[dataset] = {
             "object_key": object_key,
@@ -112,24 +155,327 @@ def verify_s3_snapshot(snapshot_id: str) -> dict[str, Any]:
     return {
         "snapshot_id": snapshot_id,
         "manifest_key": manifest_key,
+        "pipeline_completed_at": completed_at,
         "status": "VERIFIED",
         "datasets": verified_datasets,
     }
 
 
+def verify_bronze_snapshot(snapshot_result: dict[str, Any]) -> dict[str, Any]:
+    """Compare this run's S3 objects with their exact Bronze rows and indexes."""
+    if snapshot_result.get("status") != "VERIFIED":
+        raise ValueError("Bronze verification requires a verified S3 snapshot")
+
+    snapshot_id = snapshot_result["snapshot_id"]
+    manifest_key = snapshot_result["manifest_key"]
+    s3 = _s3_client()
+    bucket = os.environ["S3_BUCKET"]
+
+    connection_settings = {
+        "host": os.environ["POSTGRES_HOST"],
+        "port": int(os.environ.get("POSTGRES_PORT", "5432")),
+        "dbname": os.environ["POSTGRES_DB"],
+        "user": os.environ["POSTGRES_USER"],
+        "password": os.environ["POSTGRES_PASSWORD"],
+        "connect_timeout": 10,
+    }
+    verified: dict[str, dict[str, Any]] = {}
+
+    with psycopg.connect(**connection_settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT manifest_key
+                FROM bronze.loaded_snapshots
+                WHERE snapshot_id = %s
+                """,
+                (snapshot_id,),
+            )
+            loaded_snapshot = cursor.fetchone()
+        if loaded_snapshot is None:
+            raise ValueError(f"Snapshot {snapshot_id} is not registered in bronze.loaded_snapshots")
+        if loaded_snapshot[0] != manifest_key:
+            raise ValueError(f"Bronze manifest key does not match S3 for snapshot {snapshot_id}")
+
+        for dataset, details in snapshot_result["datasets"].items():
+            object_key = details["object_key"]
+            expected_records = _read_json_object(s3, bucket, object_key)
+            table = BRONZE_TABLES[dataset]
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT record_index, raw_payload
+                    FROM {table}
+                    WHERE source_object_key = %s
+                    ORDER BY record_index
+                    """,
+                    (object_key,),
+                )
+                bronze_rows = cursor.fetchall()
+
+            expected_indexes = list(range(len(expected_records)))
+            actual_indexes = [row[0] for row in bronze_rows]
+            if actual_indexes != expected_indexes:
+                raise ValueError(
+                    f"Bronze record indexes do not match S3 for {dataset}: "
+                    f"expected {expected_indexes}, got {actual_indexes}"
+                )
+
+            def canonical(record: Any) -> str:
+                return json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+            actual_records = [row[1] for row in bronze_rows]
+            if [canonical(record) for record in actual_records] != [
+                canonical(record) for record in expected_records
+            ]:
+                raise ValueError(f"Bronze raw payload differs from S3 for {dataset}: {object_key}")
+
+            verified[dataset] = {
+                "object_key": object_key,
+                "record_count": len(bronze_rows),
+                "payload_match": True,
+                "record_indexes_complete": True,
+            }
+
+    return {
+        "snapshot_id": snapshot_id,
+        "pipeline_completed_at": snapshot_result["pipeline_completed_at"],
+        "status": "VERIFIED",
+        "datasets": verified,
+    }
+
+
+def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
+    """Check Mart readiness and confirm inventory reflects this run's snapshot."""
+    if snapshot_result.get("status") != "VERIFIED":
+        raise ValueError("Mart verification requires a verified S3 snapshot")
+
+    s3 = _s3_client()
+    bucket = os.environ["S3_BUCKET"]
+    inventory_key = snapshot_result["datasets"]["inventory"]["object_key"]
+    orders_key = snapshot_result["datasets"]["orders"]["object_key"]
+    inventory_records = _read_json_object(s3, bucket, inventory_key)
+    order_records = _read_json_object(s3, bucket, orders_key)
+
+    # Mirror the validity filters and latest-date choice used by stg_inventory
+    # and mart.inventory. record_index breaks ties within one immutable object.
+    expected_inventory: dict[int, tuple[int, str, int]] = {}
+    for index, record in enumerate(inventory_records):
+        try:
+            product_id = int(record["product_id"])
+            quantity = int(record["quantity"])
+            snapshot_date = str(record["snapshot_date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if product_id <= 0 or quantity < 0 or not snapshot_date or snapshot_date == "None":
+            continue
+        previous = expected_inventory.get(product_id)
+        if previous is None or (snapshot_date, index) > (previous[2], previous[2]):
+            expected_inventory[product_id] = (quantity, snapshot_date, index)
+
+    expected_suppliers = set()
+    for record in order_records:
+        try:
+            order_id = record.get("order_id")
+            product_id = int(record["product_id"])
+            supplier_id = int(record["supplier_id"])
+            planned_quantity = int(record["planned_quantity"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if order_id is not None and product_id > 0 and supplier_id > 0 and planned_quantity > 0:
+            expected_suppliers.add(supplier_id)
+
+    connection_settings = {
+        "host": os.environ["POSTGRES_HOST"],
+        "port": int(os.environ.get("POSTGRES_PORT", "5432")),
+        "dbname": os.environ["POSTGRES_DB"],
+        "user": os.environ["POSTGRES_USER"],
+        "password": os.environ["POSTGRES_PASSWORD"],
+        "connect_timeout": 10,
+    }
+    with psycopg.connect(**connection_settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT product_id, quantity, snapshot_date FROM mart.inventory")
+            inventory_rows = cursor.fetchall()
+            cursor.execute("SELECT supplier_id FROM mart.supplier_reliability")
+            supplier_rows = cursor.fetchall()
+
+    if not inventory_rows:
+        raise ValueError("mart.inventory exists but contains no rows")
+    if not supplier_rows:
+        raise ValueError("mart.supplier_reliability exists but contains no rows")
+
+    actual_inventory = {
+        int(product_id): (int(quantity), str(snapshot_date))
+        for product_id, quantity, snapshot_date in inventory_rows
+    }
+    expected_inventory_values = {
+        product_id: (quantity, snapshot_date)
+        for product_id, (quantity, snapshot_date, _index) in expected_inventory.items()
+    }
+    if actual_inventory != expected_inventory_values:
+        raise ValueError(
+            "mart.inventory does not match the inventory data in this dag1 snapshot"
+        )
+
+    actual_suppliers = {int(row[0]) for row in supplier_rows}
+    if actual_suppliers != expected_suppliers:
+        raise ValueError(
+            "mart.supplier_reliability supplier coverage does not match this dag1 snapshot"
+        )
+
+    return {
+        "snapshot_id": snapshot_result["snapshot_id"],
+        "pipeline_completed_at": snapshot_result["pipeline_completed_at"],
+        "status": "VERIFIED",
+        "mart": {
+            "inventory_rows": len(inventory_rows),
+            "inventory_matches_snapshot": True,
+            "supplier_reliability_rows": len(supplier_rows),
+            "supplier_coverage_matches_snapshot": True,
+        },
+    }
+
+
+def _metabase_request(
+    base_url: str,
+    path: str,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    session: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if session:
+        headers["X-Metabase-Session"] = session
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+            return response.status, json.loads(body) if body else {}
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as error:
+        raise RuntimeError(f"Metabase API {method} {path} failed: {error}") from error
+
+
+def verify_metabase_readiness(
+    snapshot_result: dict[str, Any],
+    metabase_url: str,
+    admin_email: str,
+    admin_password: str,
+) -> dict[str, Any]:
+    """Authenticate to Metabase and query both required Mart tables."""
+    if not metabase_url or not admin_email or not admin_password:
+        raise ValueError(
+            "Configure Airflow Variables METABASE_URL, METABASE_ADMIN_EMAIL, "
+            "and METABASE_ADMIN_PASSWORD"
+        )
+
+    _, session_response = _metabase_request(
+        metabase_url,
+        "/api/session",
+        method="POST",
+        payload={"username": admin_email, "password": admin_password},
+    )
+    session_id = session_response.get("id")
+    if not session_id:
+        raise RuntimeError("Metabase authentication did not return a session")
+
+    _, databases_response = _metabase_request(
+        metabase_url, "/api/database", session=session_id
+    )
+    source = next(
+        (
+            item
+            for item in databases_response.get("data", [])
+            if item.get("name") == "ELT Pipeline"
+        ),
+        None,
+    )
+    if source is None:
+        raise RuntimeError("Metabase data source 'ELT Pipeline' was not found")
+
+    database_id = int(source["id"])
+    queried_tables = {}
+    for table in MART_TABLES:
+        _, result = _metabase_request(
+            metabase_url,
+            "/api/dataset",
+            method="POST",
+            session=session_id,
+            payload={
+                "database": database_id,
+                "type": "native",
+                "native": {
+                    "query": f"SELECT COUNT(*) AS row_count FROM mart.{table}",
+                    "template-tags": {},
+                },
+                "parameters": [],
+            },
+        )
+        rows = result.get("data", {}).get("rows", [])
+        if not rows or not rows[0] or int(rows[0][0]) <= 0:
+            raise RuntimeError(f"Metabase query returned no data for mart.{table}")
+        queried_tables[table] = int(rows[0][0])
+
+    return {
+        "snapshot_id": snapshot_result["snapshot_id"],
+        "pipeline_completed_at": snapshot_result["pipeline_completed_at"],
+        "status": "VERIFIED",
+        "metabase": {
+            "data_source": "ELT Pipeline",
+            "queried_tables": queried_tables,
+        },
+    }
+
+
 with DAG(
     dag_id="elt_pipeline_verification",
-    description="Verify the manifest and stored record counts for one S3 snapshot",
+    description="Verify one dag1 snapshot across S3, Bronze, Mart, and Metabase",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    tags=["elt", "verification", "s3"],
+    tags=["elt", "verification", "s3", "bronze", "metabase"],
 ) as dag:
     verify_snapshot = PythonOperator(
         task_id="verify_s3_snapshot",
         python_callable=verify_s3_snapshot,
         op_kwargs={
             "snapshot_id": "{{ (dag_run.conf or {}).get('snapshot_id', '') }}",
+            "pipeline_completed_at": "{{ (dag_run.conf or {}).get('pipeline_completed_at', '') }}",
         },
     )
+
+    verify_bronze = PythonOperator(
+        task_id="verify_bronze_snapshot",
+        python_callable=verify_bronze_snapshot,
+        op_kwargs={
+            "snapshot_result": "{{ ti.xcom_pull(task_ids='verify_s3_snapshot') }}",
+        },
+    )
+
+    verify_mart = PythonOperator(
+        task_id="verify_mart_tables",
+        python_callable=verify_mart_tables,
+        op_kwargs={
+            "snapshot_result": "{{ ti.xcom_pull(task_ids='verify_s3_snapshot') }}",
+        },
+    )
+
+    verify_metabase = PythonOperator(
+        task_id="verify_metabase_readiness",
+        python_callable=verify_metabase_readiness,
+        op_kwargs={
+            "snapshot_result": "{{ ti.xcom_pull(task_ids='verify_s3_snapshot') }}",
+            "metabase_url": "{{ var.value.METABASE_URL }}",
+            "admin_email": "{{ var.value.METABASE_ADMIN_EMAIL }}",
+            "admin_password": "{{ var.value.METABASE_ADMIN_PASSWORD }}",
+        },
+    )
+
+    verify_snapshot >> verify_bronze >> verify_mart >> verify_metabase
