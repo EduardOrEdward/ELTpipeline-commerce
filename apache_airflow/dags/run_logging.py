@@ -49,6 +49,11 @@ def publish_run_logs(context: dict) -> None:
         "start_date": isoformat(dag_run.start_date),
         "end_date": isoformat(dag_run.end_date),
         "created_at": datetime.now(timezone.utc).isoformat(),
+        # Verification reports retain the exact upstream run baseline without
+        # copying arbitrary DAG configuration (which could contain secrets).
+        "snapshot_id": (dag_run.conf or {}).get("snapshot_id"),
+        "pipeline_completed_at": (dag_run.conf or {}).get("pipeline_completed_at"),
+        "source_run_id": (dag_run.conf or {}).get("source_run_id"),
         "tasks": [
             {
                 "task_id": task_instance.task_id,
