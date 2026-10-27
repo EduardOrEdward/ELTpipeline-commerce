@@ -317,6 +317,16 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
             latest_inventory_ingestion = cursor.fetchone()[0]
             cursor.execute("SELECT MAX(ingested_at) FROM silver.stg_orders")
             latest_orders_ingestion = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (product_id) product_id, quantity, snapshot_date
+                FROM silver.stg_inventory
+                ORDER BY product_id, snapshot_date DESC, ingested_at DESC
+                """
+            )
+            current_silver_inventory_rows = cursor.fetchall()
+            cursor.execute("SELECT DISTINCT supplier_id FROM silver.stg_orders")
+            current_silver_supplier_rows = cursor.fetchall()
             cursor.execute("SELECT product_id, quantity, snapshot_date FROM mart.inventory")
             inventory_rows = cursor.fetchall()
             cursor.execute("SELECT supplier_id FROM mart.supplier_reliability")
@@ -337,33 +347,41 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
     }
     actual_suppliers = {int(row[0]) for row in supplier_rows}
 
-    # dag2 may be delayed until after a newer dag1 run. Compare this snapshot
-    # with the Mart only when no later Bronze ingestion has superseded its
-    # completion baseline; otherwise the newer successful run is allowed to
-    # own the current Mart state.
+    # A delayed dag2 must not fail just because a later dag1 run has already
+    # rebuilt the Mart. Prefer an exact match to this run's snapshot; if newer
+    # ingestion exists, also accept the current Mart only when it matches the
+    # current Silver views produced from Bronze.
     later_ingestion_exists = any(
         ingested_at is not None
         and ingested_at.astimezone(timezone.utc) > completed_at
         for ingested_at in (latest_inventory_ingestion, latest_orders_ingestion)
     )
-    if not later_ingestion_exists:
-        for product_id, expected_value in expected_inventory_values.items():
-            actual_value = actual_inventory.get(product_id)
-            if actual_value is None:
-                raise ValueError(
-                    f"mart.inventory is missing product {product_id} from this dag1 snapshot"
-                )
-            if expected_value[1] >= actual_value[1] and actual_value != expected_value:
-                raise ValueError(
-                    f"mart.inventory is stale or inconsistent for product {product_id}"
-                )
+    snapshot_inventory_matches = True
+    for product_id, expected_value in expected_inventory_values.items():
+        actual_value = actual_inventory.get(product_id)
+        if actual_value is None:
+            snapshot_inventory_matches = False
+            break
+        if expected_value[1] >= actual_value[1] and actual_value != expected_value:
+            snapshot_inventory_matches = False
+            break
+    snapshot_suppliers_match = expected_suppliers.issubset(actual_suppliers)
+    snapshot_matches = snapshot_inventory_matches and snapshot_suppliers_match
 
-        if not expected_suppliers.issubset(actual_suppliers):
-            missing_suppliers = sorted(expected_suppliers - actual_suppliers)
-            raise ValueError(
-                "mart.supplier_reliability is missing suppliers from this dag1 snapshot: "
-                f"{missing_suppliers}"
-            )
+    current_silver_inventory = {
+        int(product_id): (int(quantity), str(snapshot_date))
+        for product_id, quantity, snapshot_date in current_silver_inventory_rows
+    }
+    current_silver_suppliers = {int(row[0]) for row in current_silver_supplier_rows}
+    current_silver_matches = (
+        actual_inventory == current_silver_inventory
+        and actual_suppliers == current_silver_suppliers
+    )
+
+    if not snapshot_matches and not (later_ingestion_exists and current_silver_matches):
+        raise ValueError(
+            "Mart matches neither this dag1 snapshot nor a newer current Silver state"
+        )
 
     return {
         "snapshot_id": snapshot_result["snapshot_id"],
@@ -371,10 +389,10 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
         "status": "VERIFIED",
         "mart": {
             "inventory_rows": len(inventory_rows),
-            "inventory_matches_snapshot": None if later_ingestion_exists else True,
+            "inventory_matches_snapshot": snapshot_matches,
             "supplier_reliability_rows": len(supplier_rows),
-            "supplier_coverage_matches_snapshot": None if later_ingestion_exists else True,
-            "superseded_by_newer_ingestion": later_ingestion_exists,
+            "supplier_coverage_matches_snapshot": snapshot_suppliers_match,
+            "superseded_by_newer_ingestion": later_ingestion_exists and not snapshot_matches,
         },
     }
 
