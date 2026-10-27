@@ -19,6 +19,9 @@ export POSTGRES_DB="elt_pipeline"
 export POSTGRES_USER="postgre_user"
 export S3_BUCKET="elt-raw"
 export S3_ENDPOINT="http://seaweedfs:8333"
+export METABASE_URL="http://metabase:3000"
+export METABASE_ADMIN_EMAIL="ci-admin@example.com"
+export METABASE_ADMIN_PASSWORD="CI-Mb!7qR2-vN9xK4p"
 export API_URL="http://mock_api:8000"
 export FAILURE_RATE="0"
 export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
@@ -65,6 +68,11 @@ docker compose build ingestion dbt
 docker compose up -d --wait --wait-timeout 300 db mock_api seaweedfs
 docker compose run --rm -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/bootstrap_s3.py
 
+# dag2 verifies Metabase through its authenticated API, so prepare the same
+# data source used by the regular integration test before starting Airflow.
+docker compose up -d --wait --wait-timeout 180 metabase
+docker compose run --rm -e METABASE_ADMIN_EMAIL -e METABASE_ADMIN_PASSWORD -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/configure_metabase.py
+
 "${compose[@]}" config --quiet
 "${compose[@]}" up --build -d --wait --wait-timeout 600 airflow-apiserver airflow-scheduler airflow-worker airflow-dag-processor
 curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-connrefused \
@@ -74,6 +82,30 @@ echo
 echo "Airflow API server started and passed its health endpoint."
 
 "${compose[@]}" exec -T airflow-worker airflow dags test elt_pipeline 2026-10-13
+
+# The successful dag1 run triggers dag2 automatically. Wait for its own run
+# to finish so this smoke test covers S3 -> Bronze -> Mart -> Metabase.
+verification_succeeded=0
+for attempt in $(seq 1 90); do
+  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs -d elt_pipeline_verification 2>&1 || true)"
+  if grep -q "verify__" <<< "$verification_runs" && grep -q "success" <<< "$verification_runs"; then
+    echo "$verification_runs"
+    verification_succeeded=1
+    break
+  fi
+  if grep -q "verify__" <<< "$verification_runs" && grep -q "failed" <<< "$verification_runs"; then
+    echo "$verification_runs" >&2
+    "${compose[@]}" logs --no-color airflow-worker airflow-scheduler airflow-dag-processor >&2 || true
+    exit 1
+  fi
+  sleep 5
+done
+if [[ "$verification_succeeded" -ne 1 ]]; then
+  echo "dag2 did not complete successfully within 450 seconds." >&2
+  "${compose[@]}" exec -T airflow-worker airflow dags list-runs -d elt_pipeline_verification || true
+  exit 1
+fi
+
 docker compose run --rm -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/verify_airflow_logs.py
 for table in orders deliveries inventory; do
   row_count="$(docker compose exec -T db psql -U postgre_user -d elt_pipeline -Atqc "SELECT COUNT(*) FROM bronze.$table")"
