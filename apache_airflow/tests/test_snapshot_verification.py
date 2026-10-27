@@ -3,10 +3,16 @@
 import json
 import os
 import unittest
+from botocore.exceptions import ClientError
 from io import BytesIO
 from unittest.mock import patch
 
-from apache_airflow.dags.snapshot_verification import verify_s3_snapshot
+try:
+    from apache_airflow.dags import snapshot_verification
+except ModuleNotFoundError:
+    import snapshot_verification
+
+verify_s3_snapshot = snapshot_verification.verify_s3_snapshot
 
 
 class FakeS3:
@@ -17,7 +23,10 @@ class FakeS3:
     def get_object(self, Bucket, Key):
         self.requested_keys.append((Bucket, Key))
         if Key not in self.objects:
-            raise AssertionError(f"Unexpected S3 key requested: {Key}")
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "Object not found"}},
+                "GetObject",
+            )
         payload = json.dumps(self.objects[Key]).encode("utf-8")
         return {"Body": BytesIO(payload)}
 
@@ -25,6 +34,7 @@ class FakeS3:
 class VerifyS3SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.snapshot_id = "snapshot-test"
+        self.completed_at = "2026-10-22T00:05:00+00:00"
         self.manifest_key = f"snapshots/{self.snapshot_id}/manifest.json"
         self.objects = {
             self.manifest_key: {
@@ -65,18 +75,20 @@ class VerifyS3SnapshotTests(unittest.TestCase):
         )
         self.environment.start()
         self.addCleanup(self.environment.stop)
-        self.s3_client_patch = patch(
-            "apache_airflow.dags.snapshot_verification.boto3.client",
+        self.s3_client_patch = patch.object(
+            snapshot_verification.boto3,
+            "client",
             return_value=self.s3,
         )
         self.s3_client_patch.start()
         self.addCleanup(self.s3_client_patch.stop)
 
     def test_verifies_manifest_and_record_counts_without_inspecting_records(self):
-        result = verify_s3_snapshot(self.snapshot_id)
+        result = verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
         self.assertEqual(result["status"], "VERIFIED")
         self.assertEqual(result["snapshot_id"], self.snapshot_id)
+        self.assertEqual(result["pipeline_completed_at"], self.completed_at)
         self.assertEqual(
             {name: details["record_count"] for name, details in result["datasets"].items()},
             {"deliveries": 1, "inventory": 3, "orders": 2},
@@ -87,30 +99,50 @@ class VerifyS3SnapshotTests(unittest.TestCase):
         self.objects[self.manifest_key]["snapshot_id"] = "another-snapshot"
 
         with self.assertRaisesRegex(ValueError, "does not match"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_rejects_manifest_missing_a_required_dataset(self):
         del self.objects[self.manifest_key]["datasets"]["inventory"]
 
         with self.assertRaisesRegex(ValueError, "exactly orders, deliveries, and inventory"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_rejects_record_count_mismatch(self):
         self.objects[self.manifest_key]["datasets"]["orders"]["record_count"] = 3
 
         with self.assertRaisesRegex(ValueError, "Record count mismatch"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_rejects_empty_dataset(self):
         self.objects["deliveries/2026-10-22/snapshot-test.json"] = []
         self.objects[self.manifest_key]["datasets"]["deliveries"]["record_count"] = 0
 
         with self.assertRaisesRegex(ValueError, "must not be empty"):
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
+
+    def test_fails_when_a_referenced_s3_object_is_missing(self):
+        del self.objects["inventory/2026-10-22/snapshot-test.json"]
+
+        with self.assertRaises(ClientError) as error:
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
+
+        self.assertEqual(error.exception.response["Error"]["Code"], "NoSuchKey")
+
+    def test_requires_pipeline_completion_timestamp(self):
+        with self.assertRaisesRegex(ValueError, "pipeline_completed_at"):
             verify_s3_snapshot(self.snapshot_id)
+
+    def test_rejects_snapshot_object_key_from_another_snapshot(self):
+        self.objects[self.manifest_key]["datasets"]["orders"]["object_key"] = (
+            "orders/2026-10-22/another-snapshot.json"
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not belong to snapshot"):
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_requires_snapshot_id(self):
         with self.assertRaisesRegex(ValueError, "snapshot_id"):
-            verify_s3_snapshot("")
+            verify_s3_snapshot("", self.completed_at)
 
 
 if __name__ == "__main__":

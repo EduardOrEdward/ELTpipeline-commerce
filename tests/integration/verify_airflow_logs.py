@@ -30,7 +30,13 @@ def main() -> None:
     report_response = client.get_object(Bucket=bucket, Key=report_key)
     report = json.loads(report_response["Body"].read().decode("utf-8"))
 
-    expected_tasks = {"extract_to_s3", "load_bronze", "run_dbt_build"}
+    expected_tasks = {
+        "extract_to_s3",
+        "load_bronze",
+        "run_dbt_build",
+        "capture_pipeline_completion",
+        "trigger_verification",
+    }
     tasks = {task["task_id"]: task for task in report.get("tasks", [])}
     missing_tasks = expected_tasks - tasks.keys()
     if missing_tasks:
