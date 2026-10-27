@@ -18,6 +18,8 @@ import psycopg
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
+from run_logging import publish_run_logs
+
 
 REQUIRED_DATASETS = frozenset({"orders", "deliveries", "inventory"})
 BRONZE_TABLES = {
@@ -466,6 +468,8 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     is_paused_upon_creation=False,
+    on_success_callback=publish_run_logs,
+    on_failure_callback=publish_run_logs,
     tags=["elt", "verification", "s3", "bronze", "metabase"],
 ) as dag:
     verify_snapshot = PythonOperator(
