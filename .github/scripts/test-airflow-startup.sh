@@ -52,6 +52,33 @@ cleanup() {
   else
     echo "Keeping Airflow test stack for debugging (KEEP_AIRFLOW_TEST_STACK=1)."
   fi
+
+  # GitHub Actions artifacts must be portable across filesystems such as NTFS.
+  # Airflow run IDs contain colons in log directory names, so sanitize path
+  # components only after tests and log collection have finished.
+  python - "$repo_root/logs" <<'PY'
+import os
+import re
+import sys
+
+root = sys.argv[1]
+invalid_chars = re.compile(r'[<>:"|?*\\r\\n]')
+
+for current, directories, files in os.walk(root, topdown=False):
+    for name in files + directories:
+        safe_name = invalid_chars.sub("_", name)
+        if safe_name == name:
+            continue
+
+        source = os.path.join(current, name)
+        destination = os.path.join(current, safe_name)
+        suffix = 1
+        while os.path.exists(destination):
+            stem, extension = os.path.splitext(safe_name)
+            destination = os.path.join(current, f"{stem}_{suffix}{extension}")
+            suffix += 1
+        os.replace(source, destination)
+PY
 }
 trap cleanup EXIT
 
