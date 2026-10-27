@@ -8,9 +8,11 @@ from io import BytesIO
 from unittest.mock import patch
 
 try:
-    from apache_airflow.dags.snapshot_verification import verify_s3_snapshot
+    from apache_airflow.dags import snapshot_verification
 except ModuleNotFoundError:
-    from snapshot_verification import verify_s3_snapshot
+    import snapshot_verification
+
+verify_s3_snapshot = snapshot_verification.verify_s3_snapshot
 
 
 class FakeS3:
@@ -73,8 +75,9 @@ class VerifyS3SnapshotTests(unittest.TestCase):
         )
         self.environment.start()
         self.addCleanup(self.environment.stop)
-        self.s3_client_patch = patch(
-            "apache_airflow.dags.snapshot_verification.boto3.client",
+        self.s3_client_patch = patch.object(
+            snapshot_verification.boto3,
+            "client",
             return_value=self.s3,
         )
         self.s3_client_patch.start()
