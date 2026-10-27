@@ -183,11 +183,14 @@ def verify_bronze_snapshot(snapshot_result: dict[str, Any]) -> dict[str, Any]:
     }
     verified: dict[str, dict[str, Any]] = {}
 
+    completed_at = datetime.fromisoformat(
+        snapshot_result["pipeline_completed_at"].replace("Z", "+00:00")
+    ).astimezone(timezone.utc)
     with psycopg.connect(**connection_settings) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT manifest_key
+                SELECT manifest_key, loaded_at
                 FROM bronze.loaded_snapshots
                 WHERE snapshot_id = %s
                 """,
@@ -198,6 +201,11 @@ def verify_bronze_snapshot(snapshot_result: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Snapshot {snapshot_id} is not registered in bronze.loaded_snapshots")
         if loaded_snapshot[0] != manifest_key:
             raise ValueError(f"Bronze manifest key does not match S3 for snapshot {snapshot_id}")
+        loaded_at = loaded_snapshot[1]
+        if loaded_at is not None and loaded_at.astimezone(timezone.utc) > completed_at:
+            raise ValueError(
+                f"Bronze snapshot {snapshot_id} was registered after dag1 completion time"
+            )
 
         for dataset, details in snapshot_result["datasets"].items():
             object_key = details["object_key"]
@@ -292,6 +300,9 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
     if not expected_suppliers:
         raise ValueError("This dag1 snapshot has no valid supplier orders for Mart verification")
 
+    completed_at = datetime.fromisoformat(
+        snapshot_result["pipeline_completed_at"].replace("Z", "+00:00")
+    ).astimezone(timezone.utc)
     connection_settings = {
         "host": os.environ["POSTGRES_HOST"],
         "port": int(os.environ.get("POSTGRES_PORT", "5432")),
@@ -302,6 +313,10 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
     }
     with psycopg.connect(**connection_settings) as connection:
         with connection.cursor() as cursor:
+            cursor.execute("SELECT MAX(ingested_at) FROM silver.stg_inventory")
+            latest_inventory_ingestion = cursor.fetchone()[0]
+            cursor.execute("SELECT MAX(ingested_at) FROM silver.stg_orders")
+            latest_orders_ingestion = cursor.fetchone()[0]
             cursor.execute("SELECT product_id, quantity, snapshot_date FROM mart.inventory")
             inventory_rows = cursor.fetchall()
             cursor.execute("SELECT supplier_id FROM mart.supplier_reliability")
@@ -320,28 +335,35 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
         product_id: (quantity, snapshot_date)
         for product_id, (quantity, snapshot_date, _index) in expected_inventory.items()
     }
-    # A product omitted from this snapshot may legitimately retain an older
-    # known value in the Mart. Every product present in this snapshot must be
-    # represented, and this run must win whenever its snapshot_date is newer
-    # than or equal to the value currently published.
-    for product_id, expected_value in expected_inventory_values.items():
-        actual_value = actual_inventory.get(product_id)
-        if actual_value is None:
-            raise ValueError(
-                f"mart.inventory is missing product {product_id} from this dag1 snapshot"
-            )
-        if expected_value[1] >= actual_value[1] and actual_value != expected_value:
-            raise ValueError(
-                f"mart.inventory is stale or inconsistent for product {product_id}"
-            )
-
     actual_suppliers = {int(row[0]) for row in supplier_rows}
-    if not expected_suppliers.issubset(actual_suppliers):
-        missing_suppliers = sorted(expected_suppliers - actual_suppliers)
-        raise ValueError(
-            "mart.supplier_reliability is missing suppliers from this dag1 snapshot: "
-            f"{missing_suppliers}"
-        )
+
+    # dag2 may be delayed until after a newer dag1 run. Compare this snapshot
+    # with the Mart only when no later Bronze ingestion has superseded its
+    # completion baseline; otherwise the newer successful run is allowed to
+    # own the current Mart state.
+    later_ingestion_exists = any(
+        ingested_at is not None
+        and ingested_at.astimezone(timezone.utc) > completed_at
+        for ingested_at in (latest_inventory_ingestion, latest_orders_ingestion)
+    )
+    if not later_ingestion_exists:
+        for product_id, expected_value in expected_inventory_values.items():
+            actual_value = actual_inventory.get(product_id)
+            if actual_value is None:
+                raise ValueError(
+                    f"mart.inventory is missing product {product_id} from this dag1 snapshot"
+                )
+            if expected_value[1] >= actual_value[1] and actual_value != expected_value:
+                raise ValueError(
+                    f"mart.inventory is stale or inconsistent for product {product_id}"
+                )
+
+        if not expected_suppliers.issubset(actual_suppliers):
+            missing_suppliers = sorted(expected_suppliers - actual_suppliers)
+            raise ValueError(
+                "mart.supplier_reliability is missing suppliers from this dag1 snapshot: "
+                f"{missing_suppliers}"
+            )
 
     return {
         "snapshot_id": snapshot_result["snapshot_id"],
@@ -349,9 +371,10 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
         "status": "VERIFIED",
         "mart": {
             "inventory_rows": len(inventory_rows),
-            "inventory_matches_snapshot": True,
+            "inventory_matches_snapshot": None if later_ingestion_exists else True,
             "supplier_reliability_rows": len(supplier_rows),
-            "supplier_coverage_matches_snapshot": True,
+            "supplier_coverage_matches_snapshot": None if later_ingestion_exists else True,
+            "superseded_by_newer_ingestion": later_ingestion_exists,
         },
     }
 
