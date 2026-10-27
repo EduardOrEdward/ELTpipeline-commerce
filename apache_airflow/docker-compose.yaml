@@ -95,6 +95,10 @@ x-airflow-common:
     AIRFLOW_VAR_POSTGRES_DB: elt_pipeline
     AIRFLOW_VAR_POSTGRES_USER: postgre_user
     AIRFLOW_VAR_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgre_password}
+    # Used by dag2 to verify that Metabase can query the rebuilt Mart tables.
+    AIRFLOW_VAR_METABASE_URL: ${METABASE_URL:-http://metabase:3000}
+    AIRFLOW_VAR_METABASE_ADMIN_EMAIL: ${METABASE_ADMIN_EMAIL:-}
+    AIRFLOW_VAR_METABASE_ADMIN_PASSWORD: ${METABASE_ADMIN_PASSWORD:-}
     PYTHONPATH: /opt/airflow
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
