@@ -315,15 +315,27 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
         product_id: (quantity, snapshot_date)
         for product_id, (quantity, snapshot_date, _index) in expected_inventory.items()
     }
-    if actual_inventory != expected_inventory_values:
-        raise ValueError(
-            "mart.inventory does not match the inventory data in this dag1 snapshot"
-        )
+    # A product omitted from this snapshot may legitimately retain an older
+    # known value in the Mart. Every product present in this snapshot must be
+    # represented, and this run must win whenever its snapshot_date is newer
+    # than or equal to the value currently published.
+    for product_id, expected_value in expected_inventory_values.items():
+        actual_value = actual_inventory.get(product_id)
+        if actual_value is None:
+            raise ValueError(
+                f"mart.inventory is missing product {product_id} from this dag1 snapshot"
+            )
+        if expected_value[1] >= actual_value[1] and actual_value != expected_value:
+            raise ValueError(
+                f"mart.inventory is stale or inconsistent for product {product_id}"
+            )
 
     actual_suppliers = {int(row[0]) for row in supplier_rows}
-    if actual_suppliers != expected_suppliers:
+    if not expected_suppliers.issubset(actual_suppliers):
+        missing_suppliers = sorted(expected_suppliers - actual_suppliers)
         raise ValueError(
-            "mart.supplier_reliability supplier coverage does not match this dag1 snapshot"
+            "mart.supplier_reliability is missing suppliers from this dag1 snapshot: "
+            f"{missing_suppliers}"
         )
 
     return {
