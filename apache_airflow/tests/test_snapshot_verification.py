@@ -93,7 +93,7 @@ class VerifyS3SnapshotTests(unittest.TestCase):
         self.objects[self.manifest_key]["snapshot_id"] = "another-snapshot"
 
         with self.assertRaisesRegex(ValueError, "does not match"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_rejects_manifest_missing_a_required_dataset(self):
         del self.objects[self.manifest_key]["datasets"]["inventory"]
