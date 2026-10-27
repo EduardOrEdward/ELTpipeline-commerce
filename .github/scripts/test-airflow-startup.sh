@@ -62,7 +62,7 @@ import re
 import sys
 
 root = sys.argv[1]
-invalid_chars = re.compile(r'[<>:"|?*\\r\\n]')
+invalid_chars = re.compile(r'[<>:"|?*\r\n]')
 
 for current, directories, files in os.walk(root, topdown=False):
     for name in files + directories:
