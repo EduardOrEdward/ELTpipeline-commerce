@@ -7,7 +7,10 @@ from botocore.exceptions import ClientError
 from io import BytesIO
 from unittest.mock import patch
 
-from apache_airflow.dags.snapshot_verification import verify_s3_snapshot
+try:
+    from apache_airflow.dags.snapshot_verification import verify_s3_snapshot
+except ModuleNotFoundError:
+    from snapshot_verification import verify_s3_snapshot
 
 
 class FakeS3:
