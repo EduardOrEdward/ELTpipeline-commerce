@@ -105,6 +105,7 @@ x-airflow-common:
     - ../logs/airflow:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-.}/tests:/opt/airflow/tests:ro
     - ../ingestion:/opt/airflow/ingestion:ro
   networks:
     - default
