@@ -99,26 +99,26 @@ class VerifyS3SnapshotTests(unittest.TestCase):
         del self.objects[self.manifest_key]["datasets"]["inventory"]
 
         with self.assertRaisesRegex(ValueError, "exactly orders, deliveries, and inventory"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_rejects_record_count_mismatch(self):
         self.objects[self.manifest_key]["datasets"]["orders"]["record_count"] = 3
 
         with self.assertRaisesRegex(ValueError, "Record count mismatch"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_rejects_empty_dataset(self):
         self.objects["deliveries/2026-10-22/snapshot-test.json"] = []
         self.objects[self.manifest_key]["datasets"]["deliveries"]["record_count"] = 0
 
         with self.assertRaisesRegex(ValueError, "must not be empty"):
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
     def test_fails_when_a_referenced_s3_object_is_missing(self):
         del self.objects["inventory/2026-10-22/snapshot-test.json"]
 
         with self.assertRaises(ClientError) as error:
-            verify_s3_snapshot(self.snapshot_id)
+            verify_s3_snapshot(self.snapshot_id, self.completed_at)
 
         self.assertEqual(error.exception.response["Error"]["Code"], "NoSuchKey")
 
