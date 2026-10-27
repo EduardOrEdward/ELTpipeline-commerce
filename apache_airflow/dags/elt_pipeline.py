@@ -1,99 +1,25 @@
 """Airflow orchestration for the existing ELT pipeline.
 
 API extraction/publication and Bronze loading run as separate, short-lived
-containers so a Bronze retry can reuse the same completed S3 snapshot.
+containers so a Bronze retry can reuse the same completed S3 snapshot. Once
+all operational stages and dbt tests succeed, the verification DAG is triggered
+for the exact snapshot produced by this run.
 """
 
-import json
 import os
-import tempfile
-import zipfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-import boto3
 from airflow import DAG
-from airflow.configuration import conf
-from airflow.models.taskinstance import TaskInstance
 from airflow.providers.docker.operators.docker import DockerOperator
-from airflow.utils.session import create_session
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+
+from run_logging import publish_run_logs
 
 
-
-
-def publish_run_logs(context: dict) -> None:
-    """Publish a DAG run summary and its available task logs to S3.
-
-    This callback only records diagnostics; it does not retry tasks or change
-    the DAG's task failure behavior.
-    """
-    dag_run = context["dag_run"]
-    dag_id = dag_run.dag_id
-    run_id = dag_run.run_id
-    log_root = Path(conf.get("logging", "BASE_LOG_FOLDER"))
-    run_log_dir = log_root / f"dag_id={dag_id}" / f"run_id={run_id}"
-
-    def isoformat(value):
-        return value.isoformat() if value is not None else None
-
-    # Airflow 3 exposes dag_run in callback context as an SDK/Pydantic
-    # object, not the ORM object with get_task_instances(). Query the ORM
-    # task-instance records by DAG/run identity instead.
-    with create_session() as session:
-        task_instances = sorted(
-            session.query(TaskInstance)
-            .filter(
-                TaskInstance.dag_id == dag_id,
-                TaskInstance.run_id == run_id,
-            )
-            .all(),
-            key=lambda task_instance: task_instance.task_id,
-        )
-    report = {
-        "dag_id": dag_id,
-        "run_id": run_id,
-        "run_type": str(dag_run.run_type),
-        "state": dag_run.state,
-        "start_date": isoformat(dag_run.start_date),
-        "end_date": isoformat(dag_run.end_date),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "tasks": [
-            {
-                "task_id": task_instance.task_id,
-                "state": task_instance.state,
-                "try_number": task_instance.try_number,
-                "start_date": isoformat(task_instance.start_date),
-                "end_date": isoformat(task_instance.end_date),
-                "duration_seconds": task_instance.duration,
-                "log_url": task_instance.log_url,
-            }
-            for task_instance in task_instances
-        ],
-    }
-
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=os.environ["S3_ENDPOINT"],
-        aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-        aws_secret_access_key=os.environ["S3_SECRET_KEY"],
-    )
-    bucket = os.environ["S3_BUCKET"]
-    run_prefix = f"pipeline-logs/dag_id={dag_id}/run_id={run_id}"
-    s3.put_object(
-        Bucket=bucket,
-        Key=f"{run_prefix}/run-report.json",
-        Body=json.dumps(report, indent=2, default=str).encode("utf-8"),
-        ContentType="application/json",
-    )
-
-    with tempfile.TemporaryDirectory() as temporary_directory:
-        archive_path = Path(temporary_directory) / "task-logs.zip"
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            if run_log_dir.exists():
-                for log_path in sorted(run_log_dir.rglob("*")):
-                    if log_path.is_file():
-                        archive.write(log_path, log_path.relative_to(log_root))
-        s3.upload_file(str(archive_path), bucket, f"{run_prefix}/task-logs.zip")
+def capture_pipeline_completion() -> str:
+    """Capture the operational pipeline completion baseline after dbt succeeds."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 INGESTION_ENVIRONMENT = {
@@ -113,7 +39,7 @@ INGESTION_ENVIRONMENT = {
 
 with DAG(
     dag_id="elt_pipeline",
-    description="Extract to S3, load Bronze, then build and test dbt models",
+    description="Extract to S3, load Bronze, build/test dbt models, then trigger verification",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     schedule=None,
     catchup=False,
@@ -171,4 +97,23 @@ with DAG(
         },
     )
 
-    extract_to_s3 >> load_bronze >> run_dbt_build
+    capture_completion = PythonOperator(
+        task_id="capture_pipeline_completion",
+        python_callable=capture_pipeline_completion,
+    )
+
+    trigger_verification = TriggerDagRunOperator(
+        task_id="trigger_verification",
+        trigger_dag_id="elt_pipeline_verification",
+        trigger_run_id="verify__{{ run_id }}",
+        conf={
+            "snapshot_id": "{{ ti.xcom_pull(task_ids='extract_to_s3') }}",
+            "pipeline_completed_at": "{{ ti.xcom_pull(task_ids='capture_pipeline_completion') }}",
+            "source_dag_id": "{{ dag.dag_id }}",
+            "source_run_id": "{{ run_id }}",
+        },
+        wait_for_completion=False,
+        reset_dag_run=False,
+    )
+
+    extract_to_s3 >> load_bronze >> run_dbt_build >> capture_completion >> trigger_verification
