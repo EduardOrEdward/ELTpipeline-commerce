@@ -81,6 +81,7 @@ curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-connrefused
 echo
 echo "Airflow API server started and passed its health endpoint."
 
+"${compose[@]}" exec -T airflow-worker env PYTHONPATH=/opt/airflow/dags python -m unittest discover -s /opt/airflow/tests -v
 "${compose[@]}" exec -T airflow-worker airflow dags test elt_pipeline 2026-10-13
 
 # The successful dag1 run triggers dag2 automatically. Wait for its own run
