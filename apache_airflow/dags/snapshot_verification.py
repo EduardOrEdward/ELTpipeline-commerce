@@ -275,6 +275,9 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
         if previous is None or (snapshot_date, index) > (previous[1], previous[2]):
             expected_inventory[product_id] = (quantity, snapshot_date, index)
 
+    if not expected_inventory:
+        raise ValueError("This dag1 snapshot has no valid inventory records for Mart verification")
+
     expected_suppliers = set()
     for record in order_records:
         try:
@@ -286,6 +289,8 @@ def verify_mart_tables(snapshot_result: dict[str, Any]) -> dict[str, Any]:
             continue
         if order_id is not None and product_id > 0 and supplier_id > 0 and planned_quantity > 0:
             expected_suppliers.add(supplier_id)
+    if not expected_suppliers:
+        raise ValueError("This dag1 snapshot has no valid supplier orders for Mart verification")
 
     connection_settings = {
         "host": os.environ["POSTGRES_HOST"],
@@ -367,12 +372,18 @@ def _verify_metabase_task(
     admin_email: str,
     admin_password: str,
 ) -> dict[str, Any]:
-    """Pull the S3 verification result and check Metabase with configured credentials."""
+    """Check Metabase against the Mart row counts verified earlier in this DAG."""
+    mart_result = ti.xcom_pull(task_ids="verify_mart_tables")
+    expected_counts = {
+        "inventory": mart_result["mart"]["inventory_rows"],
+        "supplier_reliability": mart_result["mart"]["supplier_reliability_rows"],
+    }
     return verify_metabase_readiness(
         ti.xcom_pull(task_ids="verify_s3_snapshot"),
         metabase_url,
         admin_email,
         admin_password,
+        expected_counts,
     )
 
 
@@ -406,6 +417,7 @@ def verify_metabase_readiness(
     metabase_url: str,
     admin_email: str,
     admin_password: str,
+    expected_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Authenticate to Metabase and query both required Mart tables."""
     if not metabase_url or not admin_email or not admin_password:
@@ -459,7 +471,13 @@ def verify_metabase_readiness(
         rows = result.get("data", {}).get("rows", [])
         if not rows or not rows[0] or int(rows[0][0]) <= 0:
             raise RuntimeError(f"Metabase query returned no data for mart.{table}")
-        queried_tables[table] = int(rows[0][0])
+        row_count = int(rows[0][0])
+        if expected_counts is not None and row_count != int(expected_counts[table]):
+            raise RuntimeError(
+                f"Metabase row count for mart.{table} differs from PostgreSQL: "
+                f"Metabase={row_count}, PostgreSQL={expected_counts[table]}"
+            )
+        queried_tables[table] = row_count
 
     return {
         "snapshot_id": snapshot_result["snapshot_id"],
