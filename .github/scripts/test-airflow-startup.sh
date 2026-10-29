@@ -54,8 +54,8 @@ cleanup() {
   fi
 
   # GitHub Actions artifacts must be portable across filesystems such as NTFS.
-  # Airflow run IDs contain colons in log directory names, so sanitize path
-  # components only after tests and log collection have finished.
+  # Airflow run IDs contain colons in log directory names. Normalize the tree
+  # after log collection, updating os.walk's directory list as names change.
   python - "$repo_root/logs" <<'PY'
 import os
 import re
@@ -64,20 +64,42 @@ import sys
 root = sys.argv[1]
 invalid_chars = re.compile(r'[<>:"|?*\r\n]')
 
-for current, directories, files in os.walk(root, topdown=False):
-    for name in files + directories:
-        safe_name = invalid_chars.sub("_", name)
-        if safe_name == name:
-            continue
+def safe_destination(parent, name):
+    safe_name = invalid_chars.sub("_", name)
+    destination = os.path.join(parent, safe_name)
+    suffix = 1
+    while os.path.exists(destination) and destination != os.path.join(parent, name):
+        stem, extension = os.path.splitext(safe_name)
+        destination = os.path.join(parent, f"{stem}_{suffix}{extension}")
+        suffix += 1
+    return safe_name, destination
 
-        source = os.path.join(current, name)
-        destination = os.path.join(current, safe_name)
-        suffix = 1
-        while os.path.exists(destination):
-            stem, extension = os.path.splitext(safe_name)
-            destination = os.path.join(current, f"{stem}_{suffix}{extension}")
-            suffix += 1
-        os.replace(source, destination)
+for current, directories, files in os.walk(root, topdown=True):
+    for index, name in enumerate(directories):
+        safe_name, destination = safe_destination(current, name)
+        if safe_name != name:
+            os.replace(os.path.join(current, name), destination)
+            directories[index] = safe_name
+            print(f"Sanitized artifact directory: {name!r} -> {safe_name!r}")
+
+    for name in files:
+        safe_name, destination = safe_destination(current, name)
+        if safe_name != name:
+            os.replace(os.path.join(current, name), destination)
+            print(f"Sanitized artifact file: {name!r} -> {safe_name!r}")
+
+# Fail before upload if any unsupported character remains in a path component.
+remaining = []
+for current, directories, files in os.walk(root):
+    remaining.extend(
+        os.path.join(current, name)
+        for name in directories + files
+        if invalid_chars.search(name)
+    )
+if remaining:
+    print("Unsupported characters remain in artifact paths:", file=sys.stderr)
+    print("\\n".join(remaining), file=sys.stderr)
+    raise SystemExit(1)
 PY
 }
 trap cleanup EXIT
