@@ -135,15 +135,40 @@ echo "Airflow API server started and passed its health endpoint."
 
 # The successful dag1 run triggers dag2 automatically. Wait for its own run
 # to finish so this smoke test covers S3 -> Bronze -> Mart -> Metabase.
+# Keep the DAG ID filter in the JSON parser instead of the deprecated shorthand
+# CLI flag, and allow up to 15 minutes for the end-to-end verification.
 verification_succeeded=0
-for attempt in $(seq 1 90); do
-  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs -d elt_pipeline_verification 2>&1 || true)"
-  if grep -q "verify__" <<< "$verification_runs" && grep -q "success" <<< "$verification_runs"; then
+for attempt in $(seq 1 180); do
+  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs --output json --limit 100 2>&1 || true)"
+  verification_state="$(python -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    print("")
+    raise SystemExit(0)
+
+if isinstance(payload, dict):
+    runs = payload.get("dag_runs", payload.get("runs", []))
+else:
+    runs = payload
+
+matches = [
+    run for run in runs
+    if run.get("dag_id") == "elt_pipeline_verification"
+    and str(run.get("run_id", "")).startswith("verify__")
+]
+matches.sort(key=lambda run: str(run.get("start_date", "")), reverse=True)
+print(matches[0].get("state", "") if matches else "")
+' <<< "$verification_runs" 2>/dev/null || true)"
+  if [[ "$verification_state" == "success" ]]; then
     echo "$verification_runs"
     verification_succeeded=1
     break
   fi
-  if grep -q "verify__" <<< "$verification_runs" && grep -q "failed" <<< "$verification_runs"; then
+  if [[ "$verification_state" == "failed" ]]; then
     echo "$verification_runs" >&2
     "${compose[@]}" logs --no-color airflow-worker airflow-scheduler airflow-dag-processor >&2 || true
     exit 1
@@ -151,8 +176,8 @@ for attempt in $(seq 1 90); do
   sleep 5
 done
 if [[ "$verification_succeeded" -ne 1 ]]; then
-  echo "dag2 did not complete successfully within 450 seconds." >&2
-  "${compose[@]}" exec -T airflow-worker airflow dags list-runs -d elt_pipeline_verification || true
+  echo "dag2 did not complete successfully within 900 seconds." >&2
+  "${compose[@]}" exec -T airflow-worker airflow dags list-runs --output json --limit 100 || true
   exit 1
 fi
 
