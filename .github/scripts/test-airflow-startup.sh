@@ -98,7 +98,7 @@ for current, directories, files in os.walk(root):
     )
 if remaining:
     print("Unsupported characters remain in artifact paths:", file=sys.stderr)
-    print("\\n".join(remaining), file=sys.stderr)
+    print("\n".join(remaining), file=sys.stderr)
     raise SystemExit(1)
 PY
 }
