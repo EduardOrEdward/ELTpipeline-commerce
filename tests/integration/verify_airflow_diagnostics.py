@@ -12,6 +12,7 @@ from typing import Any
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 
 DAG_ID = "airflow_logging_diagnostics"
@@ -37,12 +38,12 @@ def wait_for_artifacts(client: Any, bucket: str, run_id: str) -> tuple[str, str]
             client.head_object(Bucket=bucket, Key=report_key)
             client.head_object(Bucket=bucket, Key=archive_key)
             return report_key, archive_key
-        except Exception as error:
-            # Retry only while one of the expected objects is not yet visible.
-            response = getattr(error, "response", {})
-            status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            code = response.get("Error", {}).get("Code")
-            if status not in (None, 404) and code not in ("404", "NoSuchKey", "NotFound"):
+        except ClientError as error:
+            # Retry only for a missing object; credentials and endpoint failures
+            # should fail immediately instead of looking like delayed uploads.
+            code = error.response.get("Error", {}).get("Code")
+            status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status != 404 and code not in ("404", "NoSuchKey", "NotFound"):
                 raise
             time.sleep(ARTIFACT_POLL_SECONDS)
 
