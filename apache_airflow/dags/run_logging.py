@@ -13,6 +13,9 @@ from airflow.models.taskinstance import TaskInstance
 from airflow.utils.session import create_session
 
 
+DIAGNOSTIC_DAG_ID = "airflow_logging_diagnostics"
+
+
 def publish_run_logs(context: dict) -> None:
     """Publish a DAG run summary and its available task logs to S3.
 
@@ -75,7 +78,14 @@ def publish_run_logs(context: dict) -> None:
         aws_secret_access_key=os.environ["S3_SECRET_KEY"],
     )
     bucket = os.environ["S3_BUCKET"]
-    run_prefix = f"pipeline-logs/dag_id={dag_id}/run_id={run_id}"
+    # Keep diagnostic artifacts separate while using the exact same callback,
+    # credentials, S3 service, and Airflow task-log directory as production DAGs.
+    artifact_root = (
+        "pipeline-logs/diagnostics"
+        if dag_id == DIAGNOSTIC_DAG_ID
+        else "pipeline-logs"
+    )
+    run_prefix = f"{artifact_root}/dag_id={dag_id}/run_id={run_id}"
     s3.put_object(
         Bucket=bucket,
         Key=f"{run_prefix}/run-report.json",
