@@ -33,7 +33,7 @@ DAGS = {
     },
 }
 LOG_START_MARKER = "Starting attempt"
-LOG_SUCCESS_MARKER = "Marking task as SUCCESS"
+LOG_SUCCESS_MARKERS = ("Marking task as SUCCESS", "Task instance finished: state=success")
 ARTIFACT_WAIT_SECONDS = 60
 ARTIFACT_POLL_SECONDS = 2
 
@@ -224,9 +224,11 @@ def verify_archive(
                 combined_text = "\n".join(task_log_text)
                 missing_markers = [
                     marker
-                    for marker in (LOG_START_MARKER, LOG_SUCCESS_MARKER)
+                    for marker in (LOG_START_MARKER,)
                     if marker not in combined_text
                 ]
+                if not any(marker in combined_text for marker in LOG_SUCCESS_MARKERS):
+                    missing_markers.append("successful task completion marker")
                 if missing_markers:
                     raise AssertionError(
                         f"{dag_id}: task log(s) for {task_id!r} do not contain "
