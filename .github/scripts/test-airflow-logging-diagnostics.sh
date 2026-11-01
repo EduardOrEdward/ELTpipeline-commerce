@@ -118,7 +118,7 @@ mkdir -p "$repo_root/logs/airflow"
 "${root_compose[@]}" up -d --wait --wait-timeout 300 seaweedfs
 "${root_compose[@]}" run --rm --no-deps \
   -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY \
-  ingestion python /app/tests/integration/bootstrap_s3.py
+  -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/bootstrap_s3.py
 
 "${airflow_compose[@]}" config --quiet
 "${airflow_compose[@]}" up --build -d --wait --wait-timeout 600 \
@@ -176,7 +176,7 @@ fi
 docker compose run --rm --no-deps \
   -e S3_ENDPOINT -e S3_BUCKET -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY \
   -e DIAGNOSTIC_RUN_ID="$run_id" \
-  -v "$repo_root/tests:/app/tests:ro" \
-  ingestion python /app/tests/integration/verify_airflow_diagnostics.py
+  -v "$repo_root/tests:/tests:ro" \
+  ingestion python /tests/integration/verify_airflow_diagnostics.py
 
 echo "Airflow logging diagnostics passed: expected runtime error, Airflow timeout, and success were recorded in S3."
