@@ -31,27 +31,43 @@ export ENV_FILE_PATH="../.env.airflow-ci"
 
 cleanup() {
   status=$?
-  # Airflow containers may create host-mounted log directories as UID 50000.
-  # Restore runner ownership before collecting/uploading artifacts.
-  sudo chown -R "$(id -u):$(id -g)" "$repo_root/logs" 2>/dev/null || true
-  mkdir -p "$repo_root/logs/ci"
-  "${compose[@]}" ps > "$repo_root/logs/ci/airflow-services-status.txt" 2>&1 || true
-  "${compose[@]}" logs --no-color > "$repo_root/logs/ci/airflow-services.log" 2>&1 || true
-  docker compose ps > "$repo_root/logs/ci/elt-services-status.txt" 2>&1 || true
-  docker compose logs --no-color > "$repo_root/logs/ci/elt-services.log" 2>&1 || true
+  # Capture Docker's service output while the containers still exist. Keep the
+  # temporary copies outside logs/, whose ownership may belong to UID 50000.
+  collection_tmp="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/airflow-log-collection.XXXXXX")"
+  "${compose[@]}" ps > "$collection_tmp/airflow-services-status.txt" 2>&1 || true
+  "${compose[@]}" logs --no-color > "$collection_tmp/airflow-services.log" 2>&1 || true
+  docker compose ps > "$collection_tmp/elt-services-status.txt" 2>&1 || true
+  docker compose logs --no-color > "$collection_tmp/elt-services.log" 2>&1 || true
+
   if [[ "$status" -ne 0 ]]; then
-    "${compose[@]}" ps || true
-    "${compose[@]}" logs --no-color || true
-    docker compose ps || true
-    docker compose logs --no-color || true
+    cat "$collection_tmp/airflow-services-status.txt" || true
+    cat "$collection_tmp/airflow-services.log" || true
+    cat "$collection_tmp/elt-services-status.txt" || true
+    cat "$collection_tmp/elt-services.log" || true
   fi
+
   if [[ "${KEEP_AIRFLOW_TEST_STACK:-0}" != "1" ]]; then
+    # Stop writers before changing ownership or touching the bind-mounted logs.
     "${compose[@]}" down --volumes --remove-orphans || true
     docker compose down --volumes --remove-orphans || true
     rm -f "$env_file"
+
+    # Airflow containers may create host-mounted log directories as UID 50000.
+    # Restore runner ownership only after every container has stopped.
+    if [[ -d "$repo_root/logs" ]]; then
+      sudo chown -R "$(id -u):$(id -g)" "$repo_root/logs" 2>/dev/null || true
+    fi
   else
     echo "Keeping Airflow test stack for debugging (KEEP_AIRFLOW_TEST_STACK=1)."
+    echo "Skipping log ownership changes while containers are still running."
   fi
+
+  mkdir -p "$repo_root/logs/ci"
+  mv "$collection_tmp/airflow-services-status.txt" "$repo_root/logs/ci/airflow-services-status.txt"
+  mv "$collection_tmp/airflow-services.log" "$repo_root/logs/ci/airflow-services.log"
+  mv "$collection_tmp/elt-services-status.txt" "$repo_root/logs/ci/elt-services-status.txt"
+  mv "$collection_tmp/elt-services.log" "$repo_root/logs/ci/elt-services.log"
+  rmdir "$collection_tmp"
 
   # GitHub Actions artifacts must be portable across filesystems such as NTFS.
   # Airflow run IDs contain colons in log directory names. Normalize the tree

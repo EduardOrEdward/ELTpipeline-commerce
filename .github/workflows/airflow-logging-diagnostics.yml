@@ -1,0 +1,28 @@
+name: Airflow logging diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  airflow-logging-diagnostics:
+    name: Verify Airflow task logging and S3 artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run isolated Airflow logging diagnostics
+        run: bash .github/scripts/test-airflow-logging-diagnostics.sh
+
+      - name: Upload Airflow diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: airflow-logging-diagnostics
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
