@@ -129,6 +129,24 @@ curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-connrefused
 
 dag_id="airflow_logging_diagnostics"
 run_id="diagnostics__${GITHUB_RUN_ID:-local}_${GITHUB_RUN_ATTEMPT:-1}"
+
+# The API health endpoint can become ready before the DAG processor has
+# registered the diagnostic DAG. Wait for registration before unpausing it.
+dag_loaded=0
+for attempt in $(seq 1 60); do
+  if "${airflow_compose[@]}" exec -T airflow-worker airflow dags list 2>/dev/null \
+    | grep -Fq "$dag_id"; then
+    dag_loaded=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$dag_loaded" -ne 1 ]]; then
+  echo "Airflow did not register DAG $dag_id within 120 seconds." >&2
+  "${airflow_compose[@]}" exec -T airflow-worker airflow dags list || true
+  exit 1
+fi
+
 "${airflow_compose[@]}" exec -T airflow-worker airflow dags unpause "$dag_id"
 "${airflow_compose[@]}" exec -T airflow-worker airflow dags trigger "$dag_id" --run-id "$run_id"
 
