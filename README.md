@@ -1,14 +1,14 @@
-ELTpipeline-commerce
+# ELTpipeline-commerce
 
-Data Engineering Project
+**Data Engineering Project**
 
-Overview
+## Overview
 
 ELTpipeline-commerce is a standalone ELT pipeline designed to ingest data from an external API, store and transform it across multiple data layers, and prepare it for analytical visualization.
 
 The project focuses on reliable data delivery, data integrity, and consistency across pipeline stages.
 
-Key Features
+### Key Features
 
 - API data ingestion and object storage.
 - Multi-layer data processing (Bronze → Silver → Gold).
@@ -17,16 +17,17 @@ Key Features
 - Centralized logging and pipeline monitoring.
 - Analytical data visualization with Metabase.
 
-Technology Stack
+### Technology Stack
 
 Python · Apache Airflow · PostgreSQL · dbt · Docker · SeaweedFS (S3) · Metabase · GitHub Actions
 
-Architecture
+## Architecture
 
 The pipeline follows a multi-layer ELT architecture. Data is ingested from an external API, stored in S3-compatible object storage, loaded into PostgreSQL, transformed through successive data layers, and prepared for analytical consumption.
 
-High-Level Architecture
+### High-Level Architecture
 
+```mermaid
 flowchart TB
     subgraph SOURCE["DATA SOURCE"]
         API["External API"]
@@ -68,8 +69,8 @@ flowchart TB
 
     class AF orchestration
     class DBT transformation
+```
 
-Legend:
-
+**Legend:**
 - Solid arrows — data flow.
 - Dashed arrows — orchestration and transformation responsibilities.
