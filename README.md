@@ -329,3 +329,186 @@ The resulting dataset includes total orders, delivered orders, planned and deliv
 
 dbt tests validate model constraints and relationships, while additional SQL tests check business rules and consistency.
 
+
+## Data Tests
+
+Data quality is validated at multiple boundaries of the pipeline. Python unit tests verify ingestion and snapshot contracts, an integration test checks the S3-to-Bronze boundary against the running services, and dbt tests validate the structured staging models and analytical Mart.
+
+The examples below are illustrative test inputs and outcomes. They explain the assertions; they are not claims about the current production dataset.
+
+### 1. API Response Contract
+
+**Test file:** [`tests/unit/test_fetch_contract.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/tests/unit/test_fetch_contract.py)
+
+These tests verify that the source API returns data in the expected shape before the ingestion process creates a snapshot:
+
+- The response must be a JSON array.
+- Every array element must be a JSON object.
+- Orders and deliveries must contain the requested number of records.
+- The unfiltered inventory response must contain the expected 500 records.
+
+For example, if the ingestion request asks for three orders but receives only two, the response is rejected:
+
+```text
+Expected orders: 3
+Received orders: 2
+
+Result: ValueError — incomplete API response
+```
+
+The checks validate the expected response structure and size. They cannot independently prove that the source API itself has not omitted records.
+
+### 2. Snapshot Publication and S3 Integrity
+
+**Test file:** [`tests/unit/test_snapshot_storage.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/tests/unit/test_snapshot_storage.py)
+
+These tests validate the publication contract implemented by the storage layer:
+
+- All required datasets must be present; unexpected datasets are rejected.
+- Each dataset must be a JSON array containing only JSON objects.
+- An empty or incomplete snapshot is rejected before any write.
+- Dataset objects are written before the catalog entry, and the manifest is published last.
+- A failed dataset or catalog write must not publish a completion manifest.
+- An S3 conditional-write conflict is accepted only when the existing object has identical content.
+
+The publication order is important because the manifest is the authoritative completion marker:
+
+```mermaid
+flowchart TB
+    A["Validate all datasets"] --> B["Write dataset objects"]
+    B --> C["Register snapshot in catalog"]
+    C --> D["Publish manifest"]
+    D --> E["Snapshot is marked COMPLETED"]
+
+    B -. "write failure" .-> F["No manifest published"]
+    C -. "catalog failure" .-> F
+```
+
+For example, if the `deliveries` object cannot be written, the test expects the storage operation to fail without registering the snapshot or publishing its manifest. A catalog entry by itself is therefore not treated as proof of completion.
+
+### 3. Bronze Snapshot Contract
+
+**Test file:** [`tests/unit/test_bronze_snapshot_contract.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/tests/unit/test_bronze_snapshot_contract.py)
+
+Before data is inserted into PostgreSQL, the Bronze loader validates the completed snapshot against its manifest. The tests cover:
+
+- Acceptance of a complete snapshot.
+- Supported manifest format version.
+- Presence of all required datasets.
+- Agreement between the requested snapshot ID and the object-key paths.
+- Valid, non-negative integer record counts (a boolean is not accepted as an integer count).
+- JSON object records in each dataset.
+- Exact correspondence between the objects supplied for loading and the objects listed in the manifest.
+
+The following example illustrates a snapshot identity mismatch:
+
+```text
+Requested snapshot: snapshot-001
+Manifest snapshot:  snapshot-001
+Orders object key:  orders/2026-10-15/another-snapshot.json
+
+Result: rejected — object does not belong to snapshot-001
+```
+
+This prevents a manifest from accidentally or incorrectly combining objects from different snapshots.
+
+### 4. Separation of Ingestion Stages
+
+**Test file:** [`tests/unit/test_ingestion_stages.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/tests/unit/test_ingestion_stages.py)
+
+These tests protect the boundary between API extraction and Bronze loading:
+
+- API extraction publishes a snapshot to S3 without requiring a PostgreSQL connection.
+- A transient S3 publication failure retries with the same `snapshot_id` and timestamp, without fetching the API data again.
+- Bronze loading reads an existing snapshot from S3 and does not call the source API.
+
+For example, when the first S3 publication attempt fails temporarily, the test verifies that the second attempt reuses the original snapshot identity and the already-fetched datasets. This avoids turning a storage retry into a new source extraction.
+
+### 5. S3–Bronze Integration Verification
+
+**Test file:** [`tests/integration/verify_pipeline.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/tests/integration/verify_pipeline.py)
+
+Unlike the unit tests, this script checks the S3 and PostgreSQL boundaries against the running integration environment.
+
+The verification covers:
+
+- Successful, non-empty JSON responses from the API endpoints.
+- Snapshot catalog and manifest structure, status, identity, and dataset coverage.
+- Correspondence between completed S3 objects and the records loaded into Bronze.
+- Equality of the canonicalized source records and Bronze JSON payloads.
+- Rejection of attempts to overwrite an existing immutable S3 object.
+- Idempotent replay: loading an already loaded snapshot must be a no-op.
+- Restricted ingestion credentials: the integration check verifies that they cannot perform bucket-wide listing.
+
+The central data comparison can be represented as follows:
+
+```mermaid
+flowchart LR
+    A["S3 dataset object"] --> C["Compare"]
+    B["Corresponding Bronze rows"] --> C
+    C --> D{"Same records and counts?"}
+    D -->|"Yes"| E["Pass"]
+    D -->|"No"| F["Fail"]
+```
+
+For example, if an S3 object contains 100 records, the corresponding Bronze rows must represent those same 100 records. Matching counts alone are insufficient: the integration check also compares the record contents.
+
+The integration workflow additionally replays a loaded snapshot and verifies that no new Bronze rows are inserted. It also attempts a conditional write against an existing object and checks that the original content remains unchanged.
+
+### 6. dbt Tests: Staging and Mart
+
+dbt tests validate the relational models after raw JSON records have been exposed as typed staging views and aggregated into the Mart.
+
+#### Generic tests
+
+**Files:** [`dbt/models/staging/schema.yml`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/dbt/models/staging/schema.yml) and [`dbt/models/mart/schema.yml`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/dbt/models/mart/schema.yml)
+
+The schema-level tests check column constraints and relationships, including:
+
+- `not_null` for required identifiers and business fields.
+- `unique` for identifiers and model grains that must not contain duplicates.
+- `relationships` to ensure that each staged delivery references an existing staged order.
+
+For example, a delivery with `order_id = 501` fails the relationship test if no row with `order_id = 501` exists in `stg_orders`.
+
+#### Singular SQL tests
+
+**Directory:** [`dbt/tests/`](https://github.com/EduardOrEdward/ELTpipeline-commerce/tree/main/dbt/tests)
+
+These SQL queries return rows that violate a specific business rule. A test passes when its query returns no rows.
+
+| Test | Validation |
+|---|---|
+| `assert_inventory_unique_product_snapshot` | One staging row per product and inventory snapshot date. |
+| `assert_order_date_sequence` | Expected delivery date must not precede the order date. |
+| `assert_silver_quantities_valid` | Staged order, delivery, and inventory quantities must satisfy their validity rules. |
+| `assert_supplier_reliability_contract` | Mart output must satisfy its metric and value constraints. |
+| `assert_supplier_reliability_reconciles_to_silver` | Mart aggregates must match independently recalculated aggregates from Silver. |
+
+The reconciliation test is particularly important: it recalculates supplier-level metrics from the staging inputs and compares them with the published Mart rows. It detects discrepancies in the final output, rather than checking only whether individual columns are populated.
+
+#### dbt unit test
+
+**Test:** `supplier_reliability_known_supplier_metrics` in [`dbt/models/mart/schema.yml`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/dbt/models/mart/schema.yml)
+
+This test supplies controlled input rows to the Mart model and checks the exact expected supplier-level results. It covers aggregation across multiple orders, early delivery, and fulfillment above 1.
+
+Example expected output:
+
+| Supplier | Orders | Planned quantity | Delivered quantity | Fulfillment rate | Average delay |
+|---|---:|---:|---:|---:|---:|
+| 10 | 2 | 30 | 27 | 0.9000 | -0.50 days |
+| 20 | 1 | 5 | 6 | 1.2000 | 4.00 days |
+
+The first supplier has an early delivery, so its average delay is negative. The second supplier received more than the planned quantity, so a fulfillment rate above 1 is valid.
+
+### Test Execution in CI
+
+The GitHub Actions workflow runs the data checks at their corresponding levels:
+
+- Python unit tests are executed with `python -m unittest discover -s tests/unit -v`.
+- The integration job runs `tests/integration/verify_pipeline.py` against the running API, S3-compatible storage, and PostgreSQL services. It runs the verification again after restoring Bronze from completed S3 snapshots.
+- `dbt build` builds the dbt models and executes their associated tests.
+
+This combination checks individual contracts, cross-service consistency, and the correctness of the analytical models.
+
