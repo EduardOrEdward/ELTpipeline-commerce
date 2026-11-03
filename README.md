@@ -552,3 +552,53 @@ The tasks run sequentially. The extraction task publishes a completed S3 snapsho
 The extraction and Bronze-loading tasks use the existing ingestion image; the dbt task uses its own image. This keeps orchestration separate from data processing and allows each component to retain its own dependencies and responsibilities.
 
 DAG 1 is responsible for **executing the pipeline**. The verification of S3, Bronze, Mart, and Metabase is delegated to DAG 2.
+
+
+### DAG 2 — Snapshot Verification
+
+**DAG ID:** `elt_pipeline_verification`
+
+The second DAG is triggered by DAG 1 after extraction, Bronze loading, and `dbt build` have succeeded. Its responsibility is to verify that the same snapshot has been published correctly and is consistently represented across the storage, database, analytical, and visualization layers.
+
+DAG 2 receives the `snapshot_id` and DAG 1 completion timestamp through the trigger configuration. It does not call the source API, reload data, or retry the ingestion workflow. A verification failure is reported as a separate failure of the verification DAG.
+
+#### Verification Flow
+
+```mermaid
+flowchart TD
+    A["verify_s3_snapshot<br/>Validate manifest and S3 objects"]
+    B["verify_bronze_snapshot<br/>Compare S3 records with Bronze"]
+    C["verify_mart_tables<br/>Check Mart data against snapshot / Silver"]
+    D["verify_metabase_readiness<br/>Query Mart tables through Metabase"]
+    E(["Verification completed"])
+
+    A --> B --> C --> D --> E
+```
+
+Each stage runs only after the previous verification succeeds. The sequence moves from the immutable source snapshot toward the analytical interface, so a failure identifies the first boundary that could not be verified.
+
+#### What Each Task Verifies
+
+| Task | Main checks |
+|---|---|
+| `verify_s3_snapshot` | Reads the manifest for the supplied snapshot ID; checks manifest format, identity, `COMPLETED` status, required datasets, unique snapshot-specific object keys, positive record counts, JSON array structure, non-empty object records, and agreement between object and manifest counts. |
+| `verify_bronze_snapshot` | Checks that the snapshot is registered in `bronze.loaded_snapshots` with the expected manifest key and was loaded before DAG 1 completion. Compares Bronze record indexes and canonicalized JSON payloads with the corresponding S3 objects. |
+| `verify_mart_tables` | Checks that `mart.inventory` and `mart.supplier_reliability` are populated. Validates inventory and supplier coverage against the triggering snapshot, while accounting for the possibility that a newer ingestion has already rebuilt the current Mart. |
+| `verify_metabase_readiness` | Authenticates to Metabase, locates the `ELT Pipeline` data source, queries `mart.inventory` and `mart.supplier_reliability`, and compares their row counts with PostgreSQL. |
+
+#### Snapshot Consistency Across Layers
+
+The Bronze check compares record contents, not just row counts. For each dataset, the expected record indexes must be exactly `0..N-1`, and the canonicalized JSON payloads in PostgreSQL must match the records stored in S3.
+
+The Mart check also accounts for asynchronous verification. DAG 1 starts DAG 2 without waiting for it to finish, so a later DAG 1 run may update the current Silver views and Mart before an earlier verification run reaches that stage. In that case, DAG 2 can accept the newer Mart state only when it matches the current Silver state; otherwise, the verification fails.
+
+#### Execution and Failure Behavior
+
+- DAG 2 is started by DAG 1 through `TriggerDagRunOperator`; it is not scheduled independently.
+- The trigger passes the snapshot ID, DAG 1 completion timestamp, and source DAG/run identifiers.
+- `wait_for_completion=False`: DAG 1 does not wait for DAG 2 to finish.
+- The four verification tasks are sequential PythonOperators. They do not launch separate processing containers.
+- No task-level retries are configured in DAG 2. A failed check fails verification rather than initiating ingestion or replaying DAG 1.
+- Success and failure callbacks publish run logs for diagnostics; logging does not change the verification result.
+
+DAG 1 is responsible for **running the ELT workflow**. DAG 2 is responsible for **checking the resulting data across system boundaries**. Keeping these responsibilities separate makes execution failures distinguishable from data-consistency or analytics-readiness failures.
