@@ -512,3 +512,43 @@ The GitHub Actions workflow runs the data checks at their corresponding levels:
 
 This combination checks individual contracts, cross-service consistency, and the correctness of the analytical models.
 
+
+
+## Airflow Orchestration
+
+### DAG 1 — ELT Pipeline
+
+**DAG ID:** `elt_pipeline`
+
+The first DAG orchestrates the operational ELT workflow. It coordinates the existing ingestion and dbt components but does not implement their processing logic itself: each processing stage runs in a separate, short-lived Docker container.
+
+#### Execution Flow
+
+```mermaid
+flowchart TD
+    A["extract_to_s3<br/>API → S3"]
+    B["load_bronze<br/>S3 → PostgreSQL Bronze"]
+    C["run_dbt_build<br/>Build Silver and Mart<br/>Run dbt tests"]
+    D["capture_pipeline_completion<br/>Capture completion timestamp"]
+    E["trigger_verification<br/>Pass snapshot ID and run metadata"]
+    F["DAG 2<br/>elt_pipeline_verification"]
+
+    A --> B --> C --> D --> E
+    E -. "triggers" .-> F
+```
+
+The tasks run sequentially. The extraction task publishes a completed S3 snapshot and returns its `snapshot_id` through Airflow XCom. The Bronze-loading task receives this identifier and loads that exact snapshot. After `dbt build` succeeds, the DAG captures a completion timestamp and triggers the verification DAG without waiting for it to finish.
+
+#### Retry and Execution Behavior
+
+| Task | Retry configuration | Behavior |
+|---|---|---|
+| `extract_to_s3` | 2 retries, 30-second delay | Fetches the API datasets and publishes the S3 snapshot. Publication retries reuse the same snapshot identity. |
+| `load_bronze` | 2 retries, 30-second delay | Loads the existing snapshot from S3; a retry does not fetch the API again. |
+| `run_dbt_build` | No task-level retries configured | Runs `dbt build` in the dedicated dbt container. |
+| `capture_pipeline_completion` | No task-level retries configured | Records the UTC timestamp after dbt succeeds. |
+| `trigger_verification` | No task-level retries configured | Starts DAG 2 and passes the snapshot ID, completion timestamp, and source DAG/run identifiers. |
+
+The extraction and Bronze-loading tasks use the existing ingestion image; the dbt task uses its own image. This keeps orchestration separate from data processing and allows each component to retain its own dependencies and responsibilities.
+
+DAG 1 is responsible for **executing the pipeline**. The verification of S3, Bronze, Mart, and Metabase is delegated to DAG 2.
