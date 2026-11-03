@@ -241,3 +241,91 @@ The extraction task returns the `snapshot_id` to Airflow. The following Bronze-l
 | Bronze loading fails after successful extraction | Airflow can retry Bronze loading using the same snapshot ID, without repeating API extraction. |
 
 This design keeps the API extraction result separate from downstream database loading and prevents an incomplete S3 publication from being treated as a completed snapshot.
+
+## Data Transformation: S3 → Bronze → Staging → Mart
+
+The transformation layer converts a completed S3 snapshot into structured PostgreSQL data and then prepares it for analytical use.
+
+### End-to-End Data Flow
+
+```mermaid
+flowchart TB
+    subgraph S3["S3 · SeaweedFS"]
+        OBJECTS["Raw JSON objects<br/>orders · deliveries · inventory"]
+        MANIFEST["COMPLETED snapshot manifest"]
+    end
+
+    subgraph BRONZE["PostgreSQL · Bronze"]
+        VALIDATE["Read manifest<br/>and validate snapshot"]
+        RAW["bronze.orders<br/>bronze.deliveries<br/>bronze.inventory<br/><br/>Raw JSONB records"]
+        TRACK["bronze.loaded_snapshots<br/>Snapshot load tracking"]
+    end
+
+    subgraph SILVER["PostgreSQL · Silver · dbt staging views"]
+        STG_ORD["silver.stg_orders"]
+        STG_DEL["silver.stg_deliveries"]
+        STG_INV["silver.stg_inventory"]
+    end
+
+    subgraph MART["PostgreSQL · Mart"]
+        SUPPLIER["mart.supplier_reliability<br/>Supplier-level metrics"]
+    end
+
+    OBJECTS --> VALIDATE
+    MANIFEST --> VALIDATE
+    VALIDATE --> RAW
+    RAW --> TRACK
+    RAW --> STG_ORD
+    RAW --> STG_DEL
+    RAW --> STG_INV
+    STG_ORD --> SUPPLIER
+    STG_DEL --> SUPPLIER
+
+    classDef storage fill:#e8f0fe,stroke:#4285f4,color:#174ea6
+    classDef transform fill:#e6f4ea,stroke:#34a853,color:#137333
+    classDef analytics fill:#fef7e0,stroke:#f9ab00,color:#8a5b00
+
+    class OBJECTS,MANIFEST storage
+    class VALIDATE,RAW,TRACK,STG_ORD,STG_DEL,STG_INV transform
+    class SUPPLIER analytics
+```
+
+### Layer Responsibilities
+
+| Layer | Purpose | Implementation |
+|---|---|---|
+| **S3** | Stores the raw dataset objects and the manifest identifying a completed snapshot. | SeaweedFS (S3-compatible object storage) |
+| **Bronze** | Loads the snapshot records into PostgreSQL while retaining each original JSON record as `JSONB`. | `bronze.orders`, `bronze.deliveries`, `bronze.inventory` |
+| **Staging (Silver)** | Extracts typed columns from raw JSON, filters invalid records, and deduplicates records using ingestion metadata. | dbt views: `silver.stg_orders`, `silver.stg_deliveries`, `silver.stg_inventory` |
+| **Mart** | Combines order and delivery data into supplier-level analytical metrics. | dbt table: `mart.supplier_reliability` |
+
+### S3 → Bronze
+
+The Bronze loader receives the `snapshot_id` produced by the extraction task. It reads the corresponding manifest and the three dataset objects from S3; it does not call the source API.
+
+Before inserting records, the loader validates the manifest status and identity, required datasets, object keys, JSON record types, and record counts. The snapshot is then loaded into the corresponding Bronze tables in a PostgreSQL transaction.
+
+Each raw record is stored in `raw_payload` as JSONB, together with its `source_object_key` and a per-object `record_index`. The `bronze.loaded_snapshots` table tracks successfully loaded snapshots. A unique constraint on the snapshot ID and unique indexes on source object key plus record index support safe retries and prevent duplicate insertion.
+
+If the snapshot has already been loaded with the same manifest, the loader treats the operation as already completed. If loading fails, the transaction is rolled back.
+
+### Bronze → Staging (Silver)
+
+dbt staging models read the raw records from Bronze and expose typed relational columns as PostgreSQL views.
+
+The models:
+- Extract fields from the JSONB payload and cast them to appropriate data types.
+- Filter records that do not meet the model's basic validity conditions.
+- Deduplicate records using business identifiers and ingestion metadata, preferring the latest record.
+- Keep orders, deliveries, and inventory as separate staging models.
+
+These models provide a structured input for downstream transformations without replacing the raw Bronze data.
+
+### Staging → Mart
+
+The `mart.supplier_reliability` model is materialized as a table. It aggregates order metrics by supplier, calculates delivery metrics from orders joined with deliveries, and combines the results.
+
+The resulting dataset includes total orders, delivered orders, planned and delivered quantities, fulfillment rate, and average delivery delay in days. Inventory is prepared in staging but is not currently used by this mart model.
+
+dbt tests validate model constraints and relationships, while additional SQL tests check business rules and consistency.
+
