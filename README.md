@@ -602,3 +602,60 @@ The Mart check also accounts for asynchronous verification. DAG 1 starts DAG 2 w
 - Success and failure callbacks publish run logs for diagnostics; logging does not change the verification result.
 
 DAG 1 is responsible for **running the ELT workflow**. DAG 2 is responsible for **checking the resulting data across system boundaries**. Keeping these responsibilities separate makes execution failures distinguishable from data-consistency or analytics-readiness failures.
+
+## Airflow Tests
+
+Airflow is tested at both the task level and through an end-to-end smoke test. The tests cover the snapshot-verification logic, execution of the two DAGs, and the availability of task logs and run artifacts in S3.
+
+### 1. Snapshot Verification Unit Tests
+
+**Test file:** [`apache_airflow/tests/test_snapshot_verification.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/apache_airflow/tests/test_snapshot_verification.py)
+
+These unit tests exercise the `verify_s3_snapshot` task logic with a mocked S3 client. They verify that the task:
+
+- Accepts a manifest and dataset objects belonging to the requested snapshot.
+- Checks the required `orders`, `deliveries`, and `inventory` datasets.
+- Rejects a manifest with a different snapshot ID or an object key belonging to another snapshot.
+- Rejects record-count mismatches and empty datasets.
+- Fails when a manifest-referenced S3 object is missing.
+- Requires both a snapshot ID and the pipeline-completion timestamp.
+
+The tests isolate the S3 verification contract; they do not connect to a live Airflow deployment or a real S3 service.
+
+### 2. Airflow End-to-End Smoke Test
+
+**Script:** [`.github/scripts/test-airflow-startup.sh`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/.github/scripts/test-airflow-startup.sh)
+
+The smoke test starts the supporting ELT services and the Airflow components, waits for the Airflow API health endpoint, and then runs the following checks:
+
+1. Executes the Airflow unit-test suite inside the Airflow worker container.
+2. Runs DAG 1 (`elt_pipeline`) with `airflow dags test`.
+3. Waits for DAG 1 to trigger DAG 2 (`elt_pipeline_verification`) and checks that the verification run reaches a successful state.
+4. Verifies that both DAGs published their run reports and task-log archives to S3.
+5. Checks that the Bronze tables (`orders`, `deliveries`, and `inventory`) and Mart tables (`inventory` and `supplier_reliability`) contain data.
+
+This exercises the actual orchestration path: extraction, Bronze loading, dbt build, and the subsequent verification DAG, including its Metabase readiness check. It is an integration smoke test of the running stack rather than a unit test of every individual DAG task.
+
+### 3. Task Log Artifact Verification
+
+**Test file:** [`tests/integration/verify_airflow_logs.py`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/tests/integration/verify_airflow_logs.py)
+
+After both DAGs complete, this integration check reads their S3 artifacts and verifies that:
+
+- Each run report identifies the expected DAG and has a successful run state.
+- Every expected task is present in the report and has succeeded.
+- Each task has a non-empty log file in the corresponding ZIP archive.
+- The ZIP archive is readable and passes its CRC integrity check.
+- Task logs contain markers for task start and successful completion.
+- The DAG 2 report references the DAG 1 run that triggered it.
+
+This confirms that the callbacks produce usable diagnostic artifacts for successful DAG runs. Controlled failure scenarios are tested separately by the manual Airflow logging-diagnostics workflow.
+
+### 4. CI Execution
+
+The Airflow smoke test is part of [`.github/workflows/ci.yml`](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/.github/workflows/ci.yml). The `airflow-smoke` job runs on pushes to `main` and pull requests targeting `main`, with a 25-minute job timeout.
+
+If the job fails, service logs are collected and uploaded as a GitHub Actions artifact, even when the smoke test does not complete successfully. The artifact is retained for 14 days.
+
+The separate [Airflow logging diagnostics workflow](https://github.com/EduardOrEdward/ELTpipeline-commerce/blob/main/.github/workflows/airflow-logging-diagnostics.yml) is manually triggered. It tests controlled task outcomes and the corresponding diagnostic artifacts; it is documented in the Logging section.
+
