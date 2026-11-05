@@ -153,7 +153,7 @@ fi
 diagnostic_state=""
 for attempt in $(seq 1 150); do
   runs_json="$("${airflow_compose[@]}" exec -T airflow-worker \
-    airflow dags list-runs --output json --limit 100 2>&1 || true)"
+    airflow dags list-runs --output json 2>&1 || true)"
   diagnostic_state="$(python -c '
 import json
 import sys
@@ -187,7 +187,7 @@ done
 
 if [[ "$diagnostic_state" != "failed" ]]; then
   echo "Diagnostic DAG did not reach the expected failed state within 300 seconds." >&2
-  "${airflow_compose[@]}" exec -T airflow-worker airflow dags list-runs --output json --limit 100 || true
+  "${airflow_compose[@]}" exec -T airflow-worker airflow dags list-runs --output json || true
   exit 1
 fi
 
