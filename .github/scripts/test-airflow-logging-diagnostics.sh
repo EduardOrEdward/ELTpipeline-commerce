@@ -153,14 +153,22 @@ fi
 diagnostic_state=""
 for attempt in $(seq 1 150); do
   runs_json="$("${airflow_compose[@]}" exec -T airflow-worker \
-    airflow dags list-runs "$dag_id" --output json 2>&1 || true)"
+    airflow dags list-runs "$dag_id" --output json 2>/dev/null || true)"
   diagnostic_state="$(python -c '
 import json
 import sys
 
-try:
-    payload = json.load(sys.stdin)
-except (json.JSONDecodeError, TypeError):
+raw = sys.stdin.read()
+payload = None
+for index, character in enumerate(raw):
+    if character not in "[{":
+        continue
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(raw[index:])
+        break
+    except json.JSONDecodeError:
+        continue
+if payload is None:
     print("")
     raise SystemExit(0)
 
