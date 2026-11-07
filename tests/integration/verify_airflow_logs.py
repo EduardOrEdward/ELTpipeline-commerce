@@ -266,19 +266,10 @@ def verify_archive(
                         archive.read(name).decode("utf-8", errors="replace")
                     )
 
-                combined_text = "\n".join(task_log_text)
-                missing_markers = [
-                    marker
-                    for marker in (LOG_START_MARKER,)
-                    if marker not in combined_text
-                ]
-                if not any(marker in combined_text for marker in LOG_SUCCESS_MARKERS):
-                    missing_markers.append("successful task completion marker")
-                if missing_markers:
-                    raise AssertionError(
-                        f"{dag_id}: task log(s) for {task_id!r} do not contain "
-                        f"expected marker(s) {missing_markers}: {archive_key}"
-                    )
+                combined_text = "\\n".join(task_log_text)
+                verify_task_log_text(
+                    dag_id, task_id, combined_text, archive_key
+                )
     except (zipfile.BadZipFile, OSError, EOFError, RuntimeError, zlib.error) as error:
         raise AssertionError(
             f"{dag_id}: could not read or validate ZIP s3://{bucket}/{archive_key}: "
