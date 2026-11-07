@@ -225,7 +225,7 @@ if [[ "$pipeline_succeeded" -ne 1 ]]; then
   "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag1_id" --output json 2>/dev/null || true
   "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag2_id" --output json 2>/dev/null || true
   exit 1
-}
+fi
 
 docker compose run --rm -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/verify_airflow_logs.py
 for table in orders deliveries inventory; do
