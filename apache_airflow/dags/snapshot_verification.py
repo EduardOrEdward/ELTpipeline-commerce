@@ -16,6 +16,7 @@ from typing import Any
 import boto3
 import psycopg
 from airflow import DAG
+from airflow.utils.trigger_rule import TriggerRule
 from airflow.providers.standard.operators.python import PythonOperator
 
 from run_logging import publish_run_logs
@@ -539,8 +540,6 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     is_paused_upon_creation=False,
-    on_success_callback=publish_run_logs,
-    on_failure_callback=publish_run_logs,
     tags=["elt", "verification", "s3", "bronze", "metabase"],
 ) as dag:
     verify_snapshot = PythonOperator(
@@ -572,4 +571,10 @@ with DAG(
         },
     )
 
-    verify_snapshot >> verify_bronze >> verify_mart >> verify_metabase
+    publish_logs = PythonOperator(
+        task_id="publish_run_logs",
+        python_callable=publish_run_logs,
+        trigger_rule=TriggerRule.ALL_DONE,
+    )
+
+    verify_snapshot >> verify_bronze >> verify_mart >> verify_metabase >> publish_logs
