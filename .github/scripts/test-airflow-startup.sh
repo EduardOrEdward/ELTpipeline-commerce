@@ -151,18 +151,31 @@ echo "Airflow API server started and passed its health endpoint."
 
 # The successful dag1 run triggers dag2 automatically. Wait for its own run
 # to finish so this smoke test covers S3 -> Bronze -> Mart -> Metabase.
-# Keep the DAG ID filter in the JSON parser instead of the deprecated shorthand
-# CLI flag, and allow up to 15 minutes for the end-to-end verification.
+# Keep the DAG ID explicit for the Airflow CLI and allow up to 15 minutes
+# for the end-to-end verification.
+dag_id="elt_pipeline_verification"
 verification_succeeded=0
 for attempt in $(seq 1 180); do
-  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json 2>&1 || true)"
+  # Keep stderr out of the JSON payload: Docker Compose warnings must not make
+  # the Airflow CLI output unparsable.
+  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json 2>/dev/null || true)"
   verification_state="$(python -c '
 import json
 import sys
 
-try:
-    payload = json.load(sys.stdin)
-except (json.JSONDecodeError, TypeError):
+output = sys.stdin.read()
+decoder = json.JSONDecoder()
+payload = None
+for index, character in enumerate(output):
+    if character not in "[{":
+        continue
+    try:
+        payload, _ = decoder.raw_decode(output[index:])
+        break
+    except json.JSONDecodeError:
+        continue
+
+if payload is None:
     print("")
     raise SystemExit(0)
 
@@ -193,7 +206,7 @@ print(matches[0].get("state", "") if matches else "")
 done
 if [[ "$verification_succeeded" -ne 1 ]]; then
   echo "dag2 did not complete successfully within 900 seconds." >&2
-  "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json || true
+  "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json 2>/dev/null || true
   exit 1
 fi
 
