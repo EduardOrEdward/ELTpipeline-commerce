@@ -266,7 +266,7 @@ def verify_archive(
                         archive.read(name).decode("utf-8", errors="replace")
                     )
 
-                combined_text = "\\n".join(task_log_text)
+                combined_text = chr(10).join(task_log_text)
                 verify_task_log_text(
                     dag_id, task_id, combined_text, archive_key
                 )
