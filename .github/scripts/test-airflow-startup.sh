@@ -155,7 +155,7 @@ echo "Airflow API server started and passed its health endpoint."
 # CLI flag, and allow up to 15 minutes for the end-to-end verification.
 verification_succeeded=0
 for attempt in $(seq 1 180); do
-  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs --output json --limit 100 2>&1 || true)"
+  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json 2>&1 || true)"
   verification_state="$(python -c '
 import json
 import sys
@@ -193,7 +193,7 @@ print(matches[0].get("state", "") if matches else "")
 done
 if [[ "$verification_succeeded" -ne 1 ]]; then
   echo "dag2 did not complete successfully within 900 seconds." >&2
-  "${compose[@]}" exec -T airflow-worker airflow dags list-runs --output json --limit 100 || true
+  "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json || true
   exit 1
 fi
 
