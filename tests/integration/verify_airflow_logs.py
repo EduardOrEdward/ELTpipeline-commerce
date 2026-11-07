@@ -32,6 +32,10 @@ DAGS = {
         },
     },
 }
+# Airflow 3 emits structured JSON log records; retain legacy markers for older
+# log formats so the validator remains compatible across supported versions.
+LOG_START_EVENTS = {"Task instance is in running state"}
+LOG_SUCCESS_EVENTS = {"Task instance in success state"}
 LOG_START_MARKER = "Starting attempt"
 LOG_SUCCESS_MARKERS = ("Marking task as SUCCESS", "Task instance finished: state=success")
 ARTIFACT_WAIT_SECONDS = 60
@@ -162,6 +166,47 @@ def verify_report(
     if failed_tasks:
         raise AssertionError(
             f"{dag_id}: expected all required tasks to succeed, got {failed_tasks}"
+        )
+
+
+def log_events(log_text: str) -> set[str]:
+    """Extract Airflow event names from newline-delimited JSON log records."""
+    events: set[str] = set()
+    for line in log_text.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("event"), str):
+            events.add(record["event"])
+    return events
+
+
+def verify_task_log_text(
+    dag_id: str,
+    task_id: str,
+    combined_text: str,
+    archive_key: str,
+) -> None:
+    """Require evidence that the task started and reached a successful state."""
+    events = log_events(combined_text)
+    started = (
+        bool(events & LOG_START_EVENTS)
+        or LOG_START_MARKER in combined_text
+    )
+    succeeded = (
+        bool(events & LOG_SUCCESS_EVENTS)
+        or any(marker in combined_text for marker in LOG_SUCCESS_MARKERS)
+    )
+    missing = []
+    if not started:
+        missing.append("task running event")
+    if not succeeded:
+        missing.append("successful task completion event")
+    if missing:
+        raise AssertionError(
+            f"{dag_id}: task log(s) for {task_id!r} do not contain "
+            f"expected event(s) {missing}: {archive_key}"
         )
 
 
