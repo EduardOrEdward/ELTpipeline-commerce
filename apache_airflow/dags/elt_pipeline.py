@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
+from airflow.utils.trigger_rule import TriggerRule
 from airflow.providers.docker.operators.docker import DockerOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
@@ -45,8 +46,6 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     tags=["elt", "ingestion", "dbt"],
-    on_success_callback=publish_run_logs,
-    on_failure_callback=publish_run_logs,
 ) as dag:
     extract_to_s3 = DockerOperator(
         task_id="extract_to_s3",
@@ -116,4 +115,10 @@ with DAG(
         reset_dag_run=False,
     )
 
-    extract_to_s3 >> load_bronze >> run_dbt_build >> capture_completion >> trigger_verification
+    publish_logs = PythonOperator(
+        task_id="publish_run_logs",
+        python_callable=publish_run_logs,
+        trigger_rule=TriggerRule.ALL_DONE,
+    )
+
+    extract_to_s3 >> load_bronze >> run_dbt_build >> capture_completion >> trigger_verification >> publish_logs
