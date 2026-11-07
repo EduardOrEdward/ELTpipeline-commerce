@@ -9,8 +9,6 @@ from pathlib import Path
 
 import boto3
 from airflow.configuration import conf
-from airflow.models.taskinstance import TaskInstance
-from airflow.utils.session import create_session
 
 
 DIAGNOSTIC_DAG_ID = "airflow_logging_diagnostics"
@@ -31,19 +29,26 @@ def publish_run_logs(context: dict) -> None:
     def isoformat(value):
         return value.isoformat() if value is not None else None
 
-    # Airflow 3 exposes dag_run in callback context as an SDK/Pydantic
-    # object, not the ORM object with get_task_instances(). Query the ORM
-    # task-instance records by DAG/run identity instead.
-    with create_session() as session:
-        task_instances = sorted(
-            session.query(TaskInstance)
-            .filter(
-                TaskInstance.dag_id == dag_id,
-                TaskInstance.run_id == run_id,
-            )
-            .all(),
-            key=lambda task_instance: task_instance.task_id,
+    # Airflow 3 task code must not query the metadata database directly.
+    # The callback context exposes a RuntimeTaskInstance with the public
+    # Task Context API for retrieving states belonging to this DAG run.
+    task_instance = context.get("ti")
+    if task_instance is None:
+        raise RuntimeError(
+            "Airflow DAG callback context did not include a task instance; "
+            "cannot retrieve task states through the public Task Context API."
         )
+
+    task_states_by_run = task_instance.get_task_states(
+        dag_id=dag_id,
+        run_ids=[run_id],
+    )
+    run_task_states = task_states_by_run.get(run_id)
+    if run_task_states is None:
+        raise RuntimeError(
+            f"Airflow returned no task states for DAG run {dag_id}/{run_id}."
+        )
+
     report = {
         "dag_id": dag_id,
         "run_id": run_id,
@@ -58,16 +63,8 @@ def publish_run_logs(context: dict) -> None:
         "pipeline_completed_at": (dag_run.conf or {}).get("pipeline_completed_at"),
         "source_run_id": (dag_run.conf or {}).get("source_run_id"),
         "tasks": [
-            {
-                "task_id": task_instance.task_id,
-                "state": task_instance.state,
-                "try_number": task_instance.try_number,
-                "start_date": isoformat(task_instance.start_date),
-                "end_date": isoformat(task_instance.end_date),
-                "duration_seconds": task_instance.duration,
-                "log_url": task_instance.log_url,
-            }
-            for task_instance in task_instances
+            {"task_id": task_id, "state": state}
+            for task_id, state in sorted(run_task_states.items())
         ],
     }
 
