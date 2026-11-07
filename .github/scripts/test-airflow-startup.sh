@@ -147,22 +147,27 @@ echo
 echo "Airflow API server started and passed its health endpoint."
 
 "${compose[@]}" exec -T airflow-worker env PYTHONPATH=/opt/airflow/dags python -m unittest discover -s /opt/airflow/tests -v
-"${compose[@]}" exec -T airflow-worker airflow dags test elt_pipeline 2026-10-13
+"${compose[@]}" exec -T airflow-worker airflow dags unpause elt_pipeline
 
-# The successful dag1 run triggers dag2 automatically. Wait for its own run
-# to finish so this smoke test covers S3 -> Bronze -> Mart -> Metabase.
-# Keep the DAG ID explicit for the Airflow CLI and allow up to 15 minutes
-# for the end-to-end verification.
-dag_id="elt_pipeline_verification"
-verification_succeeded=0
-for attempt in $(seq 1 180); do
-  # Keep stderr out of the JSON payload: Docker Compose warnings must not make
-  # the Airflow CLI output unparsable.
-  verification_runs="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json 2>/dev/null || true)"
-  verification_state="$(python -c '
+# Use a real scheduler/CeleryExecutor run instead of airflow dags test.
+# dags test executes tasks inline and does not create normal task-log files.
+dag1_id="elt_pipeline"
+dag1_run_id="ci__$(date -u +%Y%m%dT%H%M%S)"
+dag2_id="elt_pipeline_verification"
+dag2_run_id="verify__${dag1_run_id}"
+
+"${compose[@]}" exec -T airflow-worker airflow dags trigger --run-id "$dag1_run_id" "$dag1_id"
+
+get_run_state() {
+  local target_dag_id="$1"
+  local target_run_id="$2"
+  local runs_json
+  runs_json="$("${compose[@]}" exec -T airflow-worker airflow dags list-runs "$target_dag_id" --output json 2>/dev/null || true)"
+  python -c '
 import json
 import sys
 
+target_run_id = sys.argv[1]
 output = sys.stdin.read()
 decoder = json.JSONDecoder()
 payload = None
@@ -184,31 +189,43 @@ if isinstance(payload, dict):
 else:
     runs = payload
 
-matches = [
-    run for run in runs
-    if run.get("dag_id") == "elt_pipeline_verification"
-    and str(run.get("run_id", "")).startswith("verify__")
-]
-matches.sort(key=lambda run: str(run.get("start_date", "")), reverse=True)
-print(matches[0].get("state", "") if matches else "")
-' <<< "$verification_runs" 2>/dev/null || true)"
-  if [[ "$verification_state" == "success" ]]; then
-    echo "$verification_runs"
-    verification_succeeded=1
-    break
-  fi
-  if [[ "$verification_state" == "failed" ]]; then
-    echo "$verification_runs" >&2
+match = next(
+    (run for run in runs if str(run.get("run_id", "")) == target_run_id),
+    None,
+)
+print(match.get("state", "") if match else "")
+' "$target_run_id" <<< "$runs_json" 2>/dev/null || true
+}
+
+# DAG2 is triggered by DAG1. Wait for both exact run IDs, not stale successes.
+pipeline_succeeded=0
+for attempt in $(seq 1 180); do
+  dag1_state="$(get_run_state "$dag1_id" "$dag1_run_id")"
+  dag2_state="$(get_run_state "$dag2_id" "$dag2_run_id")"
+
+  if [[ "$dag1_state" == "failed" || "$dag2_state" == "failed" ]]; then
+    echo "Airflow smoke test failed: dag1=$dag1_state dag2=$dag2_state" >&2
+    "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag1_id" --output json 2>/dev/null || true
+    "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag2_id" --output json 2>/dev/null || true
     "${compose[@]}" logs --no-color airflow-worker airflow-scheduler airflow-dag-processor >&2 || true
     exit 1
   fi
+
+  if [[ "$dag1_state" == "success" && "$dag2_state" == "success" ]]; then
+    echo "DAG1 run $dag1_run_id: $dag1_state"
+    echo "DAG2 run $dag2_run_id: $dag2_state"
+    pipeline_succeeded=1
+    break
+  fi
   sleep 5
 done
-if [[ "$verification_succeeded" -ne 1 ]]; then
-  echo "dag2 did not complete successfully within 900 seconds." >&2
-  "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag_id" --output json 2>/dev/null || true
+
+if [[ "$pipeline_succeeded" -ne 1 ]]; then
+  echo "Airflow DAG runs did not both complete successfully within 900 seconds." >&2
+  "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag1_id" --output json 2>/dev/null || true
+  "${compose[@]}" exec -T airflow-worker airflow dags list-runs "$dag2_id" --output json 2>/dev/null || true
   exit 1
-fi
+}
 
 docker compose run --rm -e S3_ADMIN_ACCESS_KEY -e S3_ADMIN_SECRET_KEY -v "$repo_root/tests:/tests:ro" ingestion python /tests/integration/verify_airflow_logs.py
 for table in orders deliveries inventory; do
