@@ -14,11 +14,13 @@ from airflow.configuration import conf
 DIAGNOSTIC_DAG_ID = "airflow_logging_diagnostics"
 
 
-def publish_run_logs(context: dict) -> None:
-    """Publish a DAG run summary and its available task logs to S3.
+def publish_run_logs(**context) -> None:
+    """Publish a DAG run summary and task logs from a terminal Airflow task.
 
-    This callback only records diagnostics; it does not retry tasks or change
-    the DAG's task failure behavior.
+    Running this as a task gives Airflow 3 the Task SDK supervisor context
+    required by the public task-state API. The task runs with ALL_DONE so it
+    can publish diagnostics after upstream failures; it then re-raises a
+    failure to preserve the DAG run's failed status.
     """
     dag_run = context["dag_run"]
     dag_id = dag_run.dag_id
@@ -30,14 +32,11 @@ def publish_run_logs(context: dict) -> None:
         return value.isoformat() if value is not None else None
 
     # Airflow 3 task code must not query the metadata database directly.
-    # The callback context exposes a RuntimeTaskInstance with the public
-    # Task Context API for retrieving states belonging to this DAG run.
+    # This terminal PythonOperator runs inside the Task SDK supervisor context,
+    # where RuntimeTaskInstance.get_task_states() is supported.
     task_instance = context.get("ti")
     if task_instance is None:
-        raise RuntimeError(
-            "Airflow DAG callback context did not include a task instance; "
-            "cannot retrieve task states through the public Task Context API."
-        )
+        raise RuntimeError("Logging task context did not include a task instance.")
 
     task_states_by_run = task_instance.get_task_states(
         dag_id=dag_id,
@@ -45,15 +44,33 @@ def publish_run_logs(context: dict) -> None:
     )
     run_task_states = task_states_by_run.get(run_id)
     if run_task_states is None:
-        raise RuntimeError(
-            f"Airflow returned no task states for DAG run {dag_id}/{run_id}."
-        )
+        raise RuntimeError(f"No task states returned for DAG run {dag_id}/{run_id}.")
+
+    failed_tasks = {
+        task_id: state
+        for task_id, state in run_task_states.items()
+        if task_id != task_instance.task_id and state not in {"success", "skipped"}
+    }
+    final_state = "failed" if failed_tasks else "success"
+    report_tasks = [
+        {"task_id": task_id, "state": state}
+        for task_id, state in sorted(run_task_states.items())
+    ]
+    # The publisher is still running while it writes the report. Record its
+    # expected terminal state, derived from the upstream tasks.
+    report_tasks = [
+        task for task in report_tasks if task["task_id"] != task_instance.task_id
+    ]
+    report_tasks.append({
+        "task_id": task_instance.task_id,
+        "state": "failed" if failed_tasks else "success",
+    })
 
     report = {
         "dag_id": dag_id,
         "run_id": run_id,
         "run_type": str(dag_run.run_type),
-        "state": dag_run.state,
+        "state": final_state,
         "start_date": isoformat(dag_run.start_date),
         "end_date": isoformat(dag_run.end_date),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -62,10 +79,7 @@ def publish_run_logs(context: dict) -> None:
         "snapshot_id": (dag_run.conf or {}).get("snapshot_id"),
         "pipeline_completed_at": (dag_run.conf or {}).get("pipeline_completed_at"),
         "source_run_id": (dag_run.conf or {}).get("source_run_id"),
-        "tasks": [
-            {"task_id": task_id, "state": state}
-            for task_id, state in sorted(run_task_states.items())
-        ],
+        "tasks": report_tasks,
     }
 
     s3 = boto3.client(
@@ -98,3 +112,9 @@ def publish_run_logs(context: dict) -> None:
                     if log_path.is_file():
                         archive.write(log_path, log_path.relative_to(log_root))
         s3.upload_file(str(archive_path), bucket, f"{run_prefix}/task-logs.zip")
+
+    if failed_tasks:
+        raise RuntimeError(
+            "Run log artifacts were uploaded, but upstream tasks failed: "
+            f"{failed_tasks}"
+        )
