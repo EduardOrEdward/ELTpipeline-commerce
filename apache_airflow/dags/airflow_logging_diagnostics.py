@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
+from airflow.utils.trigger_rule import TriggerRule
 from airflow.providers.standard.operators.python import PythonOperator
 
 from run_logging import publish_run_logs
@@ -45,8 +46,6 @@ with DAG(
     max_active_tasks=3,
     default_args={"retries": 0},
     tags=["diagnostics", "logging"],
-    on_failure_callback=publish_run_logs,
-    on_success_callback=publish_run_logs,
 ) as dag:
     runtime_error = PythonOperator(
         task_id="runtime_error",
@@ -63,3 +62,11 @@ with DAG(
         task_id="success",
         python_callable=complete_successfully,
     )
+
+    publish_logs = PythonOperator(
+        task_id="publish_run_logs",
+        python_callable=publish_run_logs,
+        trigger_rule=TriggerRule.ALL_DONE,
+    )
+
+    [runtime_error, airflow_timeout, success] >> publish_logs
