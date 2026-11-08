@@ -529,15 +529,22 @@ flowchart TD
     A["extract_to_s3<br/>API → S3"]
     B["load_bronze<br/>S3 → PostgreSQL Bronze"]
     C["run_dbt_build<br/>Build Silver and Mart<br/>Run dbt tests"]
-    D["capture_pipeline_completion<br/>Capture completion timestamp"]
+    D["capture_pipeline_completion<br/>Capture UTC completion timestamp"]
     E["trigger_verification<br/>Pass snapshot ID and run metadata"]
-    F["DAG 2<br/>elt_pipeline_verification"]
+    V["DAG 2<br/>elt_pipeline_verification"]
+    L["publish_run_logs<br/>Upload run report and task-log ZIP to S3"]
 
     A --> B --> C --> D --> E
-    E -. "triggers" .-> F
+    E -. "triggers asynchronously<br/>does not wait" .-> V
+    E --> L
+
+    classDef logging fill:#fff4e5,stroke:#d69e36,color:#754c00
+    class L logging
 ```
 
-The tasks run sequentially. The extraction task publishes a completed S3 snapshot and returns its `snapshot_id` through Airflow XCom. The Bronze-loading task receives this identifier and loads that exact snapshot. After `dbt build` succeeds, the DAG captures a completion timestamp and triggers the verification DAG without waiting for it to finish.
+The five operational tasks execute sequentially. The extraction task publishes a completed S3 snapshot and returns its `snapshot_id` through Airflow XCom. The Bronze-loading task receives this identifier and loads that exact snapshot. After `dbt build` succeeds, the DAG captures a UTC completion timestamp and triggers the verification DAG with the snapshot ID, completion timestamp, and source run identifiers.
+
+The trigger is asynchronous: `wait_for_completion=False`, so DAG 1 does not wait for DAG 2 to finish. Its final `publish_run_logs` task uploads a JSON run report and a ZIP archive of task logs to S3. This task uses `TriggerRule.ALL_DONE`, allowing diagnostics to be published even if an upstream task failed or was skipped. If an upstream task failed, the logging task re-raises an error after publishing the artifacts, preserving the failed DAG status.
 
 #### Retry and Execution Behavior
 
@@ -547,7 +554,8 @@ The tasks run sequentially. The extraction task publishes a completed S3 snapsho
 | `load_bronze` | 2 retries, 30-second delay | Loads the existing snapshot from S3; a retry does not fetch the API again. |
 | `run_dbt_build` | No task-level retries configured | Runs `dbt build` in the dedicated dbt container. |
 | `capture_pipeline_completion` | No task-level retries configured | Records the UTC timestamp after dbt succeeds. |
-| `trigger_verification` | No task-level retries configured | Starts DAG 2 and passes the snapshot ID, completion timestamp, and source DAG/run identifiers. |
+| `trigger_verification` | No task-level retries configured | Starts DAG 2 asynchronously and passes the snapshot ID, completion timestamp, and source DAG/run identifiers. |
+| `publish_run_logs` | No task-level retries configured; runs with `ALL_DONE` | Uploads the run report and task-log ZIP to S3 after upstream tasks finish, including when an upstream task fails. Re-raises an error after upload if the run had failed. |
 
 The extraction and Bronze-loading tasks use the existing ingestion image; the dbt task uses its own image. This keeps orchestration separate from data processing and allows each component to retain its own dependencies and responsibilities.
 
@@ -570,12 +578,18 @@ flowchart TD
     B["verify_bronze_snapshot<br/>Compare S3 records with Bronze"]
     C["verify_mart_tables<br/>Check Mart data against snapshot / Silver"]
     D["verify_metabase_readiness<br/>Query Mart tables through Metabase"]
-    E(["Verification completed"])
+    E["publish_run_logs<br/>Upload run report and task-log ZIP to S3"]
+    F(["Verification run finished"])
 
-    A --> B --> C --> D --> E
+    A --> B --> C --> D --> E --> F
+
+    classDef logging fill:#fff4e5,stroke:#d69e36,color:#754c00
+    class E logging
 ```
 
-Each stage runs only after the previous verification succeeds. The sequence moves from the immutable source snapshot toward the analytical interface, so a failure identifies the first boundary that could not be verified.
+The four verification tasks run sequentially. Each stage starts only after the previous verification succeeds, moving from the immutable source snapshot toward the analytical interface. If a check fails, later checks are skipped and the failure identifies the first boundary that could not be verified.
+
+The final `publish_run_logs` task uses `TriggerRule.ALL_DONE`. It runs after the verification tasks have reached terminal states, including when one or more checks fail or are skipped, and uploads the run report and task-log ZIP to S3. It then preserves the failed DAG outcome by raising an error when an upstream verification task failed.
 
 #### What Each Task Verifies
 
@@ -599,7 +613,7 @@ The Mart check also accounts for asynchronous verification. DAG 1 starts DAG 2 w
 - `wait_for_completion=False`: DAG 1 does not wait for DAG 2 to finish.
 - The four verification tasks are sequential PythonOperators. They do not launch separate processing containers.
 - No task-level retries are configured in DAG 2. A failed check fails verification rather than initiating ingestion or replaying DAG 1.
-- Success and failure callbacks publish run logs for diagnostics; logging does not change the verification result.
+- The final `publish_run_logs` PythonOperator uses `TriggerRule.ALL_DONE` to publish diagnostic artifacts after upstream checks finish, even when verification fails. It re-raises an error after upload when an upstream check failed, so logging does not turn a failed verification into a successful DAG run.
 
 DAG 1 is responsible for **running the ELT workflow**. DAG 2 is responsible for **checking the resulting data across system boundaries**. Keeping these responsibilities separate makes execution failures distinguishable from data-consistency or analytics-readiness failures.
 
